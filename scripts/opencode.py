@@ -326,7 +326,9 @@ def planned_ctx(fam_id, files, vram):
             return 0
 
     weights, mtp, mm = files
-    return hardware.fam_context(fam, vram, size(weights), size(mtp), size(mm))
+    on_gpu = hardware.gpu_mib(fam, hardware.quant_of(fam, weights),
+                              os.path.getsize(weights)) if size(weights) else 0
+    return hardware.fam_context(fam, vram, on_gpu, size(mtp), size(mm))
 
 
 def model_entry(name, ctx, vision):

@@ -45,6 +45,12 @@ jobs:
       - name: Byte-compile every Python script
         run: python3 -m py_compile $(git ls-files '*.py')
 
+      # hardware.py is the model registry every launch reads; these pin
+      # that families never share a file in models/, that Gemma stays
+      # opt-in, and the context numbers the docs quote.
+      - name: hardware registry
+        run: python3 .github/scripts/test_hardware.py
+
       # kiln opencode edits a config file other tools depend on; these
       # pin that it refuses rather than writing something broken.
       - name: kiln opencode

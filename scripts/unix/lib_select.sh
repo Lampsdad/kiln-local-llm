@@ -4,7 +4,7 @@
 #
 #  Sourced by start_linux.sh / start_mac.sh / start_fedora.sh
 #  AFTER lib_variants.sh, which supplies V_PREFIX / V_QUANTS /
-#  V_MTP / V_VISION.
+#  V_MTP_FILES / V_MMPROJ_FILES.
 #
 #  Sets:
 #    MODEL      path to the weights that will be loaded
@@ -12,6 +12,9 @@
 #    MMPROJ     path to the vision projector, or empty
 #    FIT_ARGS   array: either (--ctx-size N) or (--fit on)
 #    CTX        the context that was computed, or 0
+#
+#  and defines kiln_model_args, which the start scripts call once
+#  they know their binary.
 #
 #  Why this exists: the three start scripts each carried their own
 #  copy of this preamble, hardcoded to UD-Q5_K_XL and one MTP
@@ -68,33 +71,30 @@ else
 fi
 
 # ── MTP head and vision projector ───────────────────────────
-# 27B families only, and each comes in two precisions. Better
-# first; kiln get downloads whichever the card had room for.
+# The family lists its own, best precision first; kiln get
+# downloads whichever the card had room for. Families without
+# them list nothing.
 #
 # These are plain ifs rather than `[ -f x ] && VAR=y`: under
 # set -e a failing test makes the list non-zero and aborts the
 # script, which is how a missing mmproj used to kill start_mac.sh
 # before it printed anything.
-if [ "${V_MTP:-0}" = "1" ]; then
-    if [ -f "./models/mtp-Qwen3.8-27B-Q8_0.gguf" ]; then
-        MTP="./models/mtp-Qwen3.8-27B-Q8_0.gguf"
-    elif [ -f "./models/mtp-Qwen3.8-27B-Q4_0.gguf" ]; then
-        MTP="./models/mtp-Qwen3.8-27B-Q4_0.gguf"
+for _f in ${V_MTP_FILES:-}; do
+    if [ -z "$MTP" ] && [ -f "./models/$_f" ]; then
+        MTP="./models/$_f"
     fi
-fi
+done
 # --no-mtp (kiln.sh sets KILN_NO_MTP=1) trades the draft head for
 # context: cleared here, before sizing, so the VRAM it would have used
 # becomes KV cache. Generation is roughly half as fast without it.
 if [ "${KILN_NO_MTP:-0}" = "1" ]; then
     MTP=""
 fi
-if [ "${V_VISION:-0}" = "1" ]; then
-    if [ -f "./models/mmproj-F16.gguf" ]; then
-        MMPROJ="./models/mmproj-F16.gguf"
-    elif [ -f "./models/mmproj-Qwen3.8-27B-Q8_0.gguf" ]; then
-        MMPROJ="./models/mmproj-Qwen3.8-27B-Q8_0.gguf"
+for _f in ${V_MMPROJ_FILES:-}; do
+    if [ -z "$MMPROJ" ] && [ -f "./models/$_f" ]; then
+        MMPROJ="./models/$_f"
     fi
-fi
+done
 
 # ── context ─────────────────────────────────────────────────
 REC_SAME=1
@@ -154,4 +154,56 @@ if [ "$REC_SAME" = "0" ] && [ -n "$REC_QUANT" ]; then
 fi
 echo
 
-unset _sel_dir _sel_root _sel_py _sel_hw _q _k _v
+# ── kiln_model_args BINARY ──────────────────────────────────
+# Fills EXTRA with the flags that depend on the family: sampling,
+# reasoning, the MTP head and the projector. Exits when the build
+# is too old for the family at all.
+#
+# MTP speculative decoding merged into llama.cpp in b9180
+# (2026-05-16). Older builds reject --spec-type draft-mtp, so
+# probe for it rather than assuming.
+kiln_model_args() {
+    local bin="$1" build=0
+    EXTRA=()
+    if [ "${V_MIN_BUILD:-0}" -gt 0 ]; then
+        if [ -n "$KILN_PY" ]; then
+            build="$("$KILN_PY" "$_sel_hw" --build "$bin" 2>/dev/null |
+                     kiln_strip_cr | sed -n 's/^BUILD=//p' | head -1)"
+        fi
+        if [ "${build:-0}" -gt 0 ] && [ "$build" -lt "$V_MIN_BUILD" ]; then
+            # setup skips a llama-bin/ that is already there, so the
+            # old build has to go first.
+            echo "ERROR: ${V_LABEL} needs llama.cpp b${V_MIN_BUILD} or newer;"
+            echo "       this is b${build}. For the newest build:"
+            echo "       rm -rf llama-bin && ./kiln.sh setup"
+            exit 1
+        elif [ "${build:-0}" -eq 0 ]; then
+            echo "[WARN] could not read the llama.cpp build. ${V_LABEL}"
+            echo "       needs b${V_MIN_BUILD} or newer."
+        fi
+    fi
+
+    # Word-split on purpose: the registry keeps these to plain flags.
+    # shellcheck disable=SC2206
+    EXTRA+=(${V_SAMPLING:---temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0})
+    if [ -n "${V_REASONING:-}" ]; then
+        EXTRA+=(--reasoning "$V_REASONING")
+    fi
+    if [ -n "$MTP" ] && "$bin" --help 2>&1 | grep -q 'draft-mtp'; then
+        EXTRA+=(--spec-type draft-mtp
+                --spec-draft-model "$MTP"
+                --spec-draft-ngl 99
+                --spec-draft-n-max "${V_SPEC_N:-3}")
+        echo "MTP speculative decoding: enabled"
+    elif [ -n "$MTP" ]; then
+        echo "MTP speculative decoding: unavailable (need llama.cpp b9180+)"
+    else
+        echo "MTP speculative decoding: off (no MTP head for this build)"
+    fi
+    if [ -n "$MMPROJ" ]; then
+        EXTRA+=(--mmproj "$MMPROJ")
+        echo "Vision: enabled"
+    fi
+}
+
+unset _sel_dir _sel_root _sel_py _q _k _v _f

@@ -252,6 +252,7 @@ def model_rows(vram, rec_family):
             "id": fam_id, "label": fam["label"], "alias": fam["alias"],
             "params": fam["params"], "uncensored": fam["uncensored"],
             "third_party": bool(fam.get("third_party")),
+            "min_build": fam["min_build"],
             "mtp": fam["mtp"], "vision": fam["vision"],
             "quant": quant, "ctx": ctx, "ctx_no_mtp": ctx_no_mtp,
             "has_mtp_head": bool(files and files[1]),
@@ -377,6 +378,13 @@ def server_facts(plat, port, key):
     return out
 
 
+def too_old(llama, m):
+    """True when llama.cpp is known to be older than family m needs,
+    so kiln start would refuse it. An unreadable build is not."""
+    build = int(llama.get("build") or 0)
+    return bool(build and build < m.get("min_build", 0))
+
+
 def first_on_disk(models):
     have = {m["id"] for m in models if m["quant"]}
     return next((f for f in START_ORDER if f in have), "")
@@ -392,6 +400,12 @@ def next_step(plat, llama, models, state, rec):
     if plat == "windows" and not llama["mtp"]:
         return {"action": "update", "label": "Upgrade",
                 "text": "Upgrade llama.cpp for MTP speculative decoding"}
+    # kiln.sh has no update verb, so elsewhere the model row says it.
+    old = [m for m in models if m["quant"] and too_old(llama, m)]
+    if plat == "windows" and old:
+        return {"action": "update", "label": "Upgrade",
+                "text": "Upgrade llama.cpp: %s needs b%d or newer"
+                        % (old[0]["label"], old[0]["min_build"])}
     if not first_on_disk(models):
         return {"action": "get", "variant": rec["family"] if rec else "",
                 "label": "Download",

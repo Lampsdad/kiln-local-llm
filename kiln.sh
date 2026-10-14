@@ -6,8 +6,8 @@
 #    ./kiln.sh status         status board
 #    ./kiln.sh setup          llama.cpp + cloudflared + models/
 #    ./kiln.sh hardware       what this GPU can run
-#    ./kiln.sh get [base|ablit|9b|4b|both]
-#    ./kiln.sh start [base|ablit|9b|4b] [--no-mtp]
+#    ./kiln.sh get [VARIANT|both]
+#    ./kiln.sh start [VARIANT] [--no-mtp]
 #    ./kiln.sh stop           stop server and tunnel
 #    ./kiln.sh key [show|rotate]
 #    ./kiln.sh opencode       list the local models in OpenCode
@@ -80,6 +80,20 @@ have() { command -v "$1" >/dev/null 2>&1; }
 . "$UNIX/lib_python.sh"
 PY="$KILN_PY"
 
+# Every family the registry knows. Qwen3.8 is what kiln picks for
+# you; Gemma 4 runs only when named.
+VARIANTS="base, ablit, 9b, 4b, gemma-31b, gemma-26b, gemma-12b, gemma-e4b"
+
+# A family id hardware.py knows. The Qwen ids pass without Python
+# too, so lib_variants.sh can say what is missing.
+is_variant() {
+    case "$1" in
+        ""|-*)            return 1 ;;
+        base|ablit|9b|4b) return 0 ;;
+    esac
+    [ -n "$PY" ] && "$PY" "$ROOT/scripts/hardware.py" --variant "$1" >/dev/null 2>&1
+}
+
 # ---- status board ------------------------------------------
 status() {
     local bin="./llama-bin/llama-server"
@@ -107,8 +121,17 @@ status() {
         printf '  %-14s %s\n' "kiln" "${kv:-unknown}"
     fi
 
+    local build=0
     if [ -x "$bin" ]; then
-        printf '  %-14s %s\n' "llama.cpp" "installed"
+        if [ -n "$PY" ]; then
+            build="$("$PY" "$ROOT/scripts/hardware.py" --build "$bin" 2>/dev/null |
+                     kiln_strip_cr | sed -n 's/^BUILD=//p' | head -1)"
+        fi
+        if [ "${build:-0}" -gt 0 ]; then
+            printf '  %-14s %s\n' "llama.cpp" "installed  build $build"
+        else
+            printf '  %-14s %s\n' "llama.cpp" "installed"
+        fi
         if "$bin" --help 2>&1 | grep -q 'draft-mtp'; then
             printf '  %-14s %s\n' "MTP support" "available"
         else
@@ -170,6 +193,14 @@ status() {
         [ -e "$f" ] || continue
         printf '  %-14s %s\n' " 4B distill" "$(basename "$f")"; found=1
     done
+    # Gemma 4 is opt-in, so it has rows only once something is on
+    # disk. Its MTP heads and projectors are named mtp-gemma-4-* and
+    # mmproj-gemma-4-*, so this glob only finds weights.
+    local gemma=0
+    for f in ./models/gemma-4-*.gguf; do
+        [ -e "$f" ] || continue
+        printf '  %-14s %s\n' "Gemma 4" "$(basename "$f")"; found=1; gemma=1
+    done
     [ "$found" = 0 ] && printf '  %-14s %s\n' "weights" "none         ./kiln.sh get"
 
     printf ' %s\n' '------------------------------------------------------------'
@@ -189,8 +220,16 @@ status() {
 
     # The first unmet dependency, so following it repeatedly walks
     # an empty checkout all the way to a served model.
+    local gmin=0
+    if [ "$gemma" = 1 ] && [ -n "$PY" ]; then
+        gmin="$("$PY" "$ROOT/scripts/hardware.py" --variant gemma-12b 2>/dev/null |
+                kiln_strip_cr | sed -n 's/^V_MIN_BUILD=//p' | head -1)"
+    fi
     if   [ ! -x "$bin" ];   then echo " Next:  ./kiln.sh setup    install llama.cpp"
     elif [ "$found" = 0 ];  then echo " Next:  ./kiln.sh get      download the weights"
+    elif [ "${build:-0}" -gt 0 ] && [ "${build:-0}" -lt "${gmin:-0}" ]; then
+        echo " Next:  rm -rf llama-bin && ./kiln.sh setup"
+        echo "        Gemma 4 needs llama.cpp b${gmin} or newer; this is b${build}."
     elif ! pgrep -x llama-server >/dev/null 2>&1; then
                                  echo " Next:  ./kiln.sh start    serve a model to Cursor"
     else                         echo " Server is up. Point Cursor at the URL it printed."
@@ -225,10 +264,10 @@ usage() {
                      downloaded and running
    setup             llama.cpp, cloudflared and models/
    hardware          what this GPU can run, and at what context
-   get [base|ablit|9b|4b|both]
+   get [VARIANT|both]
                      download weights; no argument takes the build
                      this GPU is sized for
-   start [base|ablit|9b|4b] [--no-mtp]
+   start [VARIANT] [--no-mtp]
                      serve a model to Cursor; --no-mtp trades the
                      MTP draft head for a larger context window
    stop              stop llama-server and cloudflared
@@ -251,6 +290,12 @@ usage() {
  If the TUI cannot start (no Python, or not a terminal), kiln
  prints a short reason and then the status board.
 
+ Variants:
+   base ablit 9b 4b       Qwen3.8: 27B, 27B abliterated, 9B and 4B
+                          distills. kiln picks from these for you.
+   gemma-31b gemma-26b    Gemma 4: 31B dense, 26B-A4B MoE, 12B and
+   gemma-12b gemma-e4b    E4B. Only when named. Needs llama.cpp b11059+.
+
 USAGE
 }
 
@@ -270,9 +315,14 @@ case "$CMD" in
                 VARIANT=base  "$UNIX/download.sh" || exit $?
                 VARIANT=ablit exec "$UNIX/download.sh"
                 ;;
-            ablit|base|9b|4b) exec env VARIANT="$ARG" "$UNIX/download.sh" ;;
             "")         exec "$UNIX/download.sh" ;;
-            *)          echo "kiln: unknown variant '$ARG' (use base, ablit, 9b, 4b or both)" >&2; exit 1 ;;
+            *)
+                if is_variant "$ARG"; then
+                    exec env VARIANT="$ARG" "$UNIX/download.sh"
+                fi
+                echo "kiln: unknown variant '$ARG' (use $VARIANTS or both)" >&2
+                exit 1
+                ;;
         esac
         ;;
     start)
@@ -281,11 +331,14 @@ case "$CMD" in
         shift
         WANT=""
         for a in "$@"; do
-            case "$a" in
-                --no-mtp)         export KILN_NO_MTP=1 ;;
-                ablit|base|9b|4b) [ -n "$WANT" ] || WANT="$a" ;;
-                *)  echo "kiln: unknown start option '$a' (use base, ablit, 9b, 4b or --no-mtp)" >&2; exit 1 ;;
-            esac
+            if [ "$a" = --no-mtp ]; then
+                export KILN_NO_MTP=1
+            elif is_variant "$a"; then
+                [ -n "$WANT" ] || WANT="$a"
+            else
+                echo "kiln: unknown start option '$a' (use $VARIANTS or --no-mtp)" >&2
+                exit 1
+            fi
         done
         if [ -n "$WANT" ]; then exec env VARIANT="$WANT" "$START"; fi
         exec "$START"

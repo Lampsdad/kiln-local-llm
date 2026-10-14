@@ -6,6 +6,8 @@
 #
 # Sets: V_ID V_LABEL V_REPO V_PREFIX V_ALIAS V_UNCENSORED
 #       V_THIRD_PARTY V_MTP V_VISION V_PARAMS V_QUANTS
+#       V_MTP_FILES V_MMPROJ_FILES V_SPEC_N V_SAMPLING V_REASONING
+#       V_MIN_BUILD
 #
 # The registry itself lives in scripts/hardware.py, which is also
 # what sizes the launch -- one file knows what a variant IS, so
@@ -14,9 +16,9 @@
 #
 # The base/ablit fallback below exists for one case: Python missing
 # on a machine that already has the weights (someone copied the GGUFs
-# in by hand). It covers the two original 27B variants only -- the
-# smaller families are Python-path only, because you cannot have
-# downloaded them without Python in the first place.
+# in by hand). It covers the two original 27B variants only -- every
+# other family (9b, 4b, Gemma 4) is Python-path only, because you
+# cannot have downloaded it without Python in the first place.
 
 _kiln_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # KILN_PY, not `command -v python3`: on Windows that resolves to
@@ -46,18 +48,26 @@ if [ -z "${VARIANT:-}" ]; then
             ;;
         disk)
             # Best family first, so a machine holding several starts
-            # the one you would have picked by hand.
-            for _cand in "Qwen3.8-27B:base" \
-                         "Huihui-Qwen3.8-27B-abliterated:ablit" \
-                         "Qwen3.8-9B:9b" "Qwen3.8-4B:4b"; do
-                _pfx="${_cand%%:*}"
-                # A literal glob test: compgen is bash-only but this
-                # file is already bash (BASH_SOURCE above).
-                if compgen -G "$_kiln_root/models/${_pfx}-*.gguf" >/dev/null; then
-                    VARIANT="${_cand##*:}"
-                    break
-                fi
-            done
+            # the one you would have picked by hand. The order is
+            # DISK_ORDER in hardware.py; the list below is the
+            # no-Python fallback.
+            if [ -n "$_kiln_py" ]; then
+                VARIANT="$("$_kiln_py" "$_kiln_root/scripts/hardware.py" \
+                    --pick-on-disk 2>/dev/null | kiln_strip_cr |
+                    sed -n 's/^VARIANT=//p' | head -1)"
+            else
+                for _cand in "Qwen3.8-27B:base" \
+                             "Huihui-Qwen3.8-27B-abliterated:ablit" \
+                             "Qwen3.8-9B:9b" "Qwen3.8-4B:4b"; do
+                    _pfx="${_cand%%:*}"
+                    # A literal glob test: compgen is bash-only but
+                    # this file is already bash (BASH_SOURCE above).
+                    if compgen -G "$_kiln_root/models/${_pfx}-*.gguf" >/dev/null; then
+                        VARIANT="${_cand##*:}"
+                        break
+                    fi
+                done
+            fi
             ;;
     esac
     : "${VARIANT:=base}"
@@ -66,6 +76,8 @@ fi
 V_ID=""; V_LABEL=""; V_REPO=""; V_PREFIX=""; V_ALIAS=""
 V_UNCENSORED=0; V_THIRD_PARTY=0; V_MTP=0; V_VISION=0
 V_PARAMS=""; V_QUANTS=""
+V_MTP_FILES=""; V_MMPROJ_FILES=""; V_SPEC_N=3; V_SAMPLING=""
+V_REASONING=""; V_MIN_BUILD=0
 
 if [ -n "$_kiln_py" ] && [ -f "$_kiln_root/scripts/hardware.py" ]; then
     # Read only the keys we expect. The output is ours, but parsing
@@ -84,6 +96,12 @@ if [ -n "$_kiln_py" ] && [ -f "$_kiln_root/scripts/hardware.py" ]; then
             V_VISION)      V_VISION="$_v" ;;
             V_PARAMS)      V_PARAMS="$_v" ;;
             V_QUANTS)      V_QUANTS="$_v" ;;
+            V_MTP_FILES)   V_MTP_FILES="$_v" ;;
+            V_MMPROJ_FILES) V_MMPROJ_FILES="$_v" ;;
+            V_SPEC_N)      V_SPEC_N="$_v" ;;
+            V_SAMPLING)    V_SAMPLING="$_v" ;;
+            V_REASONING)   V_REASONING="$_v" ;;
+            V_MIN_BUILD)   V_MIN_BUILD="$_v" ;;
         esac
     done < <("$_kiln_py" "$_kiln_root/scripts/hardware.py" \
                  --variant "${VARIANT:-base}" 2>/dev/null | kiln_strip_cr)
@@ -114,12 +132,16 @@ if [ -z "$V_ID" ]; then
             ;;
         *)
             echo "ERROR: unknown VARIANT '${VARIANT}'." >&2
-            echo "       Use base, ablit, 9b or 4b." >&2
-            echo "       (9b and 4b need python3 on PATH.)" >&2
+            echo "       Use base, ablit, 9b, 4b, gemma-31b, gemma-26b," >&2
+            echo "       gemma-12b or gemma-e4b." >&2
+            echo "       (All but base and ablit need python3 on PATH.)" >&2
             exit 1
             ;;
     esac
     V_QUANTS="UD-Q8_K_XL Q8_0 UD-Q6_K_XL UD-Q5_K_XL UD-Q4_K_XL UD-IQ4_XS UD-Q3_K_XL UD-IQ3_S UD-IQ3_XXS UD-Q2_K_XL UD-IQ2_S"
+    V_MTP_FILES="mtp-Qwen3.8-27B-Q8_0.gguf mtp-Qwen3.8-27B-Q4_0.gguf"
+    V_MMPROJ_FILES="mmproj-F16.gguf mmproj-Qwen3.8-27B-Q8_0.gguf"
+    V_SAMPLING="--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0"
 fi
 
 unset _kiln_root _kiln_py _k _v

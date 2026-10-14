@@ -9,8 +9,8 @@ call "%~dp0lib_ui.bat"
 ::    kiln                 full-screen TUI
 ::    kiln status          status board
 ::    kiln setup           llama.cpp + cloudflared + models\
-::    kiln get [base|ablit|both]
-::    kiln start [base|ablit]
+::    kiln get [VARIANT|both]
+::    kiln start [VARIANT]
 ::    kiln stop            stop server and tunnel
 ::    kiln key [show|rotate|set <key>]
 ::    kiln hardware        what this machine can run
@@ -121,6 +121,7 @@ call :row "Qwen3.8-27B"  "%ST_BASE_S%"
 call :row " abliterated" "%ST_ABL_S%"
 call :row " 9B distill"  "%ST_9B_S%"
 call :row " 4B distill"  "%ST_4B_S%"
+if defined ST_GEMMA_S call :row "Gemma 4" "%ST_GEMMA_S%"
 call :row "shared files" "%ST_SHARED_S%"
 call :rule
 call :row "server"       "%ST_RUN_S%"
@@ -152,13 +153,19 @@ set "ST_NEXT="
 :: ---- llama.cpp ----
 set "ST_BIN=0"
 set "ST_BIN_S=%C_ERR%not installed%C_0%"
+call :find_python
+:: hardware.py reads both forms llama-server prints: "version: 8679
+:: (94ca829b6)" and, from newer builds, "version: 0.4.0-dev (build
+:: 10901, ...)". The findstr fallback below handles only the first.
+:: Outside the block: a backquoted for/f inside one can misparse.
+set "BUILD=0"
+if exist "%BINARY%" if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --build "%BINARY%" 2^>nul`) do set "%%A=%%B"
 if exist "%BINARY%" (
     set "ST_BIN=1"
-    set "ST_BUILD=?"
-    rem llama-server prints "version: 8679 (94ca829b6)". Do NOT
-    rem match /C:"build" - that also hits the "built with Clang"
-    rem line and reports the build as the word "with".
-    for /f "tokens=2 delims= " %%V in ('llama-bin\llama-server.exe --version 2^>^&1 ^| findstr /C:"version:"') do set "ST_BUILD=%%V"
+    set "ST_BUILD=!BUILD!"
+    rem Do NOT match /C:"build" - that also hits the "built with
+    rem Clang" line and reports the build as the word "with".
+    if "!BUILD!"=="0" for /f "tokens=2 delims= " %%V in ('llama-bin\llama-server.exe --version 2^>^&1 ^| findstr /C:"version:"') do set "ST_BUILD=%%V"
     set "ST_BIN_S=%C_OK%installed%C_0%  %C_MU%build !ST_BUILD!%C_0%"
 )
 
@@ -198,7 +205,6 @@ set "REC_FAMILY="
 set "REC_QUANT="
 set "REC_CTX=0"
 set "TIER_LABEL="
-call :find_python
 if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --recommend 2^>nul`) do set "%%A=%%B"
 if defined TIER_LABEL (
     if defined REC_QUANT (
@@ -241,6 +247,21 @@ if defined Q_ABL  (set "ST_ABL_S=%C_OK%!Q_ABL!%C_0%")  else (set "ST_ABL_S=%C_MU
 if defined Q_9B   (set "ST_9B_S=%C_OK%!Q_9B!%C_0%")    else (set "ST_9B_S=%C_MU%not downloaded%C_0%")
 if defined Q_4B   (set "ST_4B_S=%C_OK%!Q_4B!%C_0%")    else (set "ST_4B_S=%C_MU%not downloaded%C_0%")
 
+:: Gemma 4 is opt-in, so it has a row only once something is on
+:: disk. Its MTP heads and projectors are named mtp-gemma-4-* and
+:: mmproj-gemma-4-*, so this wildcard only finds weights.
+set "ST_GEMMA_S="
+if exist "models\gemma-4-*.gguf" (
+    call :probe gemma-31b Q_G31
+    call :probe gemma-26b Q_G26
+    call :probe gemma-12b Q_G12
+    call :probe gemma-e4b Q_GE4
+    if defined Q_G31 set "ST_GEMMA_S=!ST_GEMMA_S!%C_OK%31B !Q_G31!%C_0%  "
+    if defined Q_G26 set "ST_GEMMA_S=!ST_GEMMA_S!%C_OK%26B-A4B !Q_G26!%C_0%  "
+    if defined Q_G12 set "ST_GEMMA_S=!ST_GEMMA_S!%C_OK%12B !Q_G12!%C_0%  "
+    if defined Q_GE4 set "ST_GEMMA_S=!ST_GEMMA_S!%C_OK%E4B !Q_GE4!%C_0%  "
+)
+
 :: Both builds share these two, so they are their own row rather
 :: than being counted against either one.
 :: Wildcards, not exact names: the MTP head ships as Q8_0 or
@@ -248,9 +269,15 @@ if defined Q_4B   (set "ST_4B_S=%C_OK%!Q_4B!%C_0%")    else (set "ST_4B_S=%C_MU%
 :: whichever the card had room for. Matching only the large ones
 :: reported "no MTP head" on exactly the 24 GB machines that were
 :: correctly given the small one.
+::
+:: Qwen's projector only: mmproj-F16.gguf is the name unsloth gave
+:: it, and a bare mmproj-* would also count Gemma's.
 set "ST_SHARED_S=%C_MU%no MTP head%C_0%"
 if exist "models\mtp-Qwen3.8-27B-*.gguf" set "ST_SHARED_S=%C_OK%MTP head%C_0%"
-if exist "models\mmproj-*.gguf" (set "ST_SHARED_S=!ST_SHARED_S!   %C_OK%vision%C_0%") else (set "ST_SHARED_S=!ST_SHARED_S!   %C_MU%no vision%C_0%")
+set "QWEN_VISION="
+if exist "models\mmproj-F16.gguf" set "QWEN_VISION=1"
+if exist "models\mmproj-Qwen3.8-27B-*.gguf" set "QWEN_VISION=1"
+if defined QWEN_VISION (set "ST_SHARED_S=!ST_SHARED_S!   %C_OK%vision%C_0%") else (set "ST_SHARED_S=!ST_SHARED_S!   %C_MU%no vision%C_0%")
 
 :: ---- server ----
 set "ST_RUN=0"
@@ -280,7 +307,11 @@ if "%ST_RUN%"=="1" if exist "%CF_LOG%" (
 :: the step that unblocks the rest.
 if "%ST_BIN%"=="0" set "ST_NEXT=%C_AC%kiln setup%C_0%    install llama.cpp and cloudflared"
 if not defined ST_NEXT if "%ST_MTP%"=="0" set "ST_NEXT=%C_AC%kiln update%C_0%   upgrade llama.cpp for MTP speculative decoding"
-if not defined ST_NEXT if not defined Q_BASE if not defined Q_ABL if not defined Q_9B if not defined Q_4B set "ST_NEXT=%C_AC%kiln get%C_0%      download the weights kiln hardware recommends"
+if not defined ST_NEXT if not defined Q_BASE if not defined Q_ABL if not defined Q_9B if not defined Q_4B if not defined ST_GEMMA_S set "ST_NEXT=%C_AC%kiln get%C_0%      download the weights kiln hardware recommends"
+:: Gemma 4 refuses to start on a build older than its minimum.
+set "V_MIN_BUILD=0"
+if defined ST_GEMMA_S if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --variant gemma-12b 2^>nul`) do if "%%A"=="V_MIN_BUILD" set "V_MIN_BUILD=%%B"
+if not defined ST_NEXT if not "%BUILD%"=="0" if %BUILD% LSS %V_MIN_BUILD% set "ST_NEXT=%C_AC%kiln update%C_0%   Gemma 4 needs llama.cpp b%V_MIN_BUILD% or newer"
 if not defined ST_NEXT if "%ST_RUN%"=="0" set "ST_NEXT=%C_AC%kiln start%C_0%    serve a model to Cursor"
 exit /b 0
 
@@ -574,10 +605,9 @@ echo.
 echo   %C_AC%status%C_0%                  what is installed, downloaded and running
 echo   %C_AC%setup%C_0%                   one-time: llama.cpp, cloudflared, models\
 echo   %C_AC%update%C_0%                  upgrade llama.cpp, needed for MTP
-echo   %C_AC%get%C_0%   [base^|ablit^|9b^|4b^|both]
-echo                           download weights; no argument takes the
+echo   %C_AC%get%C_0%   [VARIANT^|both]    download weights; no argument takes the
 echo                           build this GPU is sized for
-echo   %C_AC%start%C_0% [base^|ablit^|9b^|4b] serve a model; no argument opens the picker
+echo   %C_AC%start%C_0% [VARIANT]         serve a model; no argument opens the picker
 echo                           add %C_AC%--no-mtp%C_0% to trade the draft head for
 echo                           208K context instead of 119K ^(slower generation^)
 echo   %C_AC%stop%C_0%                    stop the server and the tunnel
@@ -593,6 +623,12 @@ echo   %C_AC%tui%C_0%                     full-screen app, with an interactive b
 echo                           ^(the default: kiln with no command does this^)
 echo   %C_AC%bench%C_0%                   quant speed and throughput sweep
 echo   %C_AC%clean%C_0%                   reclaim disk from superseded GGUFs
+echo.
+echo  %C_HL%Variants:%C_0%
+echo   %C_AC%base ablit 9b 4b%C_0%        Qwen3.8: 27B, 27B abliterated, 9B and 4B
+echo                           distills. kiln picks from these for you.
+echo   %C_AC%gemma-31b gemma-26b%C_0%     Gemma 4: 31B dense, 26B-A4B MoE, 12B and
+echo   %C_AC%gemma-12b gemma-e4b%C_0%     E4B. Only when named. Needs llama.cpp b11059+.
 echo.
 echo  %C_MU%With no command, kiln opens the TUI.%C_0%
 echo  %C_MU%kiln status prints the status board.%C_0%

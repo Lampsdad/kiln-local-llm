@@ -4,8 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 export PATH="${HOME}/.local/bin:${PATH}"
 
-# VARIANT=base (stock) or VARIANT=ablit (abliterated).
-# Both share the MTP head and the vision projector below.
+# VARIANT=base (stock), VARIANT=ablit (abliterated), or any other
+# family in scripts/hardware.py (9b, gemma-26b, ...).
 # With no VARIANT set, resolve it from what is on disk -- see the
 # KILN_PICK block in lib_variants.sh.
 KILN_PICK=disk . "$SCRIPT_DIR/lib_variants.sh"
@@ -35,24 +35,8 @@ fi
 # ── API key (the tunnel URL is public — see lib_api_key.sh) ──
 . "$SCRIPT_DIR/lib_api_key.sh"
 
-# ── optional features, enabled only if the pieces are present ─
-# MTP speculative decoding merged into llama.cpp in b9180
-# (2026-05-16). Older builds reject --spec-type draft-mtp, so
-# probe for it rather than assuming.
-EXTRA=()
-if [ -n "$MTP" ] && "$BINARY" --help 2>&1 | grep -q 'draft-mtp'; then
-    EXTRA+=(--spec-type draft-mtp
-            --spec-draft-model "$MTP"
-            --spec-draft-ngl 99
-            --spec-draft-n-max 3)
-    echo "MTP speculative decoding: enabled"
-else
-    echo "MTP speculative decoding: unavailable (need llama.cpp b9180+ and $MTP)"
-fi
-if [ -n "$MMPROJ" ]; then
-    EXTRA+=(--mmproj "$MMPROJ")
-    echo "Vision: enabled"
-fi
+# ── per-family flags: sampling, MTP head, vision (lib_select.sh) ─
+kiln_model_args "$BINARY"
 
 # ── stop any running instances ───────────────────────────────
 echo "Stopping any existing llama-server (cloudflared left running for stable URL)..."
@@ -78,7 +62,6 @@ echo "Starting llama-server..."
     --parallel     1 \
     --jinja \
     --reasoning-format deepseek \
-    --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
     --port         $PORT \
     --host         0.0.0.0 \
     --alias        "$ALIAS" \

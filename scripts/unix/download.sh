@@ -4,17 +4,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
 # ============================================================
-#  Download Qwen3.8 weights, sized to the machine present.
+#  Download model weights, sized to the machine present.
 #
 #  Up to three files make a full install:
 #    weights  -- per variant, see lib_variants.sh
-#    MTP head -- ggml-org/Qwen3.8-27B-GGUF  (speculative decoding)
-#    mmproj   -- vision encoder
+#    MTP head -- speculative decoding, where the family has one
+#    mmproj   -- vision encoder, likewise
 #
-#  The MTP head and the vision projector exist for the 27B
-#  variants only, are shared by both, and are fetched once:
-#  huihui-ai ablates the language layers of unsloth's own UD
-#  quants and leaves those two untouched.
+#  Which head and projector, and from where, is per family in
+#  scripts/hardware.py. The two Qwen3.8-27B variants share theirs
+#  and fetch them once: huihui-ai ablates the language layers of
+#  unsloth's own UD quants and leaves those two untouched.
 #
 #  WHAT CHANGED: QUANT used to default to UD-Q5_K_XL regardless
 #  of the card, which is right on 32 GB and a guaranteed OOM on
@@ -24,6 +24,7 @@ cd "$SCRIPT_DIR/../.."
 #    QUANT=UD-Q4_K_XL ./kiln.sh get     # override the quant
 #    VARIANT=ablit    ./kiln.sh get     # override the build
 #    VARIANT=9b       ./kiln.sh get     # smaller card
+#    VARIANT=gemma-26b ./kiln.sh get    # Gemma 4, opt-in
 # ============================================================
 
 # With no VARIANT set, resolve it from this GPU -- see the
@@ -43,8 +44,8 @@ HW="$SCRIPT_DIR/../hardware.py"
 # ── what does this machine want? ─────────────────────────────
 # Read into a plain associative-free set of shell vars; the keys
 # are ours and fixed, so a small case filter beats eval.
-REC_QUANT=""; REC_CTX=0; REC_MTP_FILE=""; REC_MTP_REPO=""
-REC_MMPROJ_FILE=""; REC_MMPROJ_REPO=""; REC_TOTAL_GB=""
+REC_QUANT=""; REC_CTX=0; REC_MTP_FILE=""; REC_MTP_REPO=""; REC_MTP_LOCAL=""
+REC_MMPROJ_FILE=""; REC_MMPROJ_REPO=""; REC_MMPROJ_LOCAL=""; REC_TOTAL_GB=""
 REC_BELOW_MIN=0; VRAM_MIB=0; TIER_LABEL=""; GPU_NAME=""; PROBED=0
 
 read_plan() {
@@ -58,8 +59,10 @@ read_plan() {
             REC_CTX)         REC_CTX="$v" ;;
             REC_MTP_FILE)    REC_MTP_FILE="$v" ;;
             REC_MTP_REPO)    REC_MTP_REPO="$v" ;;
+            REC_MTP_LOCAL)   REC_MTP_LOCAL="$v" ;;
             REC_MMPROJ_FILE) REC_MMPROJ_FILE="$v" ;;
             REC_MMPROJ_REPO) REC_MMPROJ_REPO="$v" ;;
+            REC_MMPROJ_LOCAL) REC_MMPROJ_LOCAL="$v" ;;
             REC_TOTAL_GB)    REC_TOTAL_GB="$v" ;;
             REC_BELOW_MIN)   REC_BELOW_MIN="$v" ;;
         esac
@@ -143,33 +146,43 @@ fi
 
 mkdir -p models
 
+# fetch REPO NAME [LOCAL]: NAME from REPO into models/LOCAL, which
+# defaults to NAME. A different LOCAL is how two publishers' files of
+# the same name (unsloth's mmproj-F16.gguf, for Qwen and for Gemma)
+# both fit in models/: it downloads aside, then moves into place.
 fetch() {
-    local repo="$1" name="$2"
-    if [ -f "models/$name" ]; then
-        echo "[OK] already present: $name"
+    local repo="$1" name="$2" local_name="${3:-$2}"
+    if [ -f "models/$local_name" ]; then
+        echo "[OK] already present: $local_name"
         return 0
     fi
     echo "[*] Downloading $name from $repo ..."
-    "$KILN_PY" - "$repo" "$name" <<'EOF'
+    "$KILN_PY" - "$repo" "$name" "$local_name" <<'EOF'
 import os, sys
 from huggingface_hub import hf_hub_download
-repo, name = sys.argv[1], sys.argv[2]
-path = hf_hub_download(repo_id=repo, filename=name, local_dir="models")
+repo, name, local = sys.argv[1], sys.argv[2], sys.argv[3]
+if name == local:
+    path = hf_hub_download(repo_id=repo, filename=name, local_dir="models")
+else:
+    got = hf_hub_download(repo_id=repo, filename=name,
+                          local_dir=os.path.join("models", ".download"))
+    path = os.path.join("models", local)
+    os.replace(got, path)
 print(f"    saved: {path} ({os.path.getsize(path)/1e9:.1f} GB)")
 EOF
 }
 
 fetch "$V_REPO" "$FILE"
-# Only the 27B families have these, and only when the card left
+# Only for families that have them, and only when the card left
 # room for them -- hardware.py returns empty names otherwise.
 # Plain ifs, not `[ -n x ] && fetch`: under set -e a test that
 # fails makes the whole list non-zero and aborts the script, so the
 # no-MTP case would exit silently right before the summary.
 if [ -n "$REC_MMPROJ_FILE" ]; then
-    fetch "$REC_MMPROJ_REPO" "$REC_MMPROJ_FILE"
+    fetch "$REC_MMPROJ_REPO" "$REC_MMPROJ_FILE" "$REC_MMPROJ_LOCAL"
 fi
 if [ -n "$REC_MTP_FILE" ]; then
-    fetch "$REC_MTP_REPO" "$REC_MTP_FILE"
+    fetch "$REC_MTP_REPO" "$REC_MTP_FILE" "$REC_MTP_LOCAL"
 fi
 
 echo

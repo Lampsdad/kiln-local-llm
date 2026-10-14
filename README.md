@@ -27,6 +27,7 @@ the same front door: `./kiln.sh` (same verbs). Setup links `kiln` into
 [Quick start](#quick-start) ·
 [Why Qwen3.8 is different](#what-makes-qwen38-27b-different) ·
 [Choosing a build](#choosing-a-build) ·
+[Gemma 4 (opt-in)](#gemma-4-opt-in) ·
 [Choosing a quant](#choosing-a-quant) ·
 [Using with Cursor](#using-with-cursor) ·
 [Using with OpenCode](#using-with-opencode) ·
@@ -438,8 +439,10 @@ default.
 
 ## Choosing a build
 
-Two variants are wired up. `kiln start` shows both, marks which are on
-disk, and downloads the one you pick.
+Two variants of the 27B are wired up. `kiln start` shows both, marks
+which are on disk, and downloads the one you pick. (The smaller
+distills are [above](#the-smaller-models), and Gemma 4 is
+[below](#gemma-4-opt-in).)
 
 | | Stock | Abliterated |
 |---|---|---|
@@ -474,6 +477,85 @@ internet — see [Security](#security).
 
 Reach for the stock build unless you have a specific reason not to; it is
 what the tuning numbers below were measured on.
+
+---
+
+## Gemma 4 (opt-in)
+
+Google's [Gemma 4](https://huggingface.co/collections/google/gemma-4)
+is wired up as a second model line. **kiln never picks it for you.**
+`kiln hardware`, a bare `kiln get` and a bare `kiln start` all stay on
+Qwen3.8. Gemma runs when you name it:
+
+```bat
+kiln get gemma-26b        :: sized to this GPU, like any other build
+kiln start gemma-26b
+```
+
+| Variant | Model | What it is | Cursor model name |
+|---|---|---|---|
+| `gemma-31b` | Gemma 4 31B | dense; the quality pick for 32 GB and up | `gemma-4-31b` |
+| `gemma-26b` | Gemma 4 26B-A4B | mixture of experts, 3.8B active per token; the 24 GB pick | `gemma-4-26b-a4b` |
+| `gemma-12b` | Gemma 4 12B | dense; for 12–16 GB | `gemma-4-12b` |
+| `gemma-e4b` | Gemma 4 E4B | small and quick, but weak at tool calls | `gemma-4-e4b` |
+
+All four come from unsloth's GGUF repos (Apache-2.0). Each has its own
+MTP draft head (Google's "assistant" drafter) and its own vision
+projector. Nothing is shared with the Qwen builds. E4B is there if you
+ask for it, but kiln never suggests it, even to someone running Gemma
+on a card too small for the 12B. It scores 42% on Tau2 to the 31B's 77%,
+and tool calls are most of what Cursor sends.
+
+**It needs llama.cpp b11059 or newer.** On Windows that is
+`kiln update`. On macOS and Linux, `rm -rf llama-bin && ./kiln.sh setup`.
+`kiln start` refuses an older build, and does so before it stops the
+server you are running. Gemma's MTP support is older than that, but the
+fixes for its draft head (b10742), its vision tower (b10798) and
+required tool calls (b11059) came later.
+
+**What each card runs, if you ask for Gemma 4**
+
+| Card | Model | Quant | MTP | Vision | Context |
+|---|---|---|---|---|---|
+| 12 GB | Gemma 4 12B | `IQ4_XS` | off | f16 | 140K |
+| 16 GB | Gemma 4 12B | `UD-Q5_K_XL` | q8_0 | f16 | 172K |
+| 24 GB | Gemma 4 26B-A4B | `UD-Q4_K_XL` | q8_0 | f16 | 100K |
+| 32 GB | Gemma 4 31B | `UD-Q4_K_XL` | q8_0 | f16 | 112K |
+| 48 GB | Gemma 4 31B | `UD-Q8_K_XL` | q8_0 | f16 | 128K |
+
+`python scripts/hardware.py --table gemma` prints the full per-quant
+matrix. On the 5090, each of those numbers was checked by loading the
+model and measuring:
+
+| Build | Gen t/s, MTP on | Gen t/s, MTP off | MTP accept |
+|---|---|---|---|
+| 31B `UD-Q5_K_XL` | 145–148 | 58 | 63% |
+| 12B `UD-Q8_K_XL` | 190–212 | 85 | 53–62% |
+| E4B `UD-Q8_K_XL` | 273–279 | 166 | 43–45% |
+
+Each figure is an 800-token answer to a coding prompt, with thinking on.
+Tool calls with `tool_choice` set to `auto` and to `required` both came
+back as proper tool calls.
+
+**How it differs from Qwen3.8:**
+
+- **Sliding-window attention instead of DeltaNet.** Gemma has five
+  local layers (1,024-token window) for every global layer. Only the
+  global layers grow with context, so the same sizing arithmetic
+  applies. Each token costs more than the KV cache alone, though,
+  because flash attention keeps an f16 copy of one global layer's K
+  and V. kiln counts that, and the MTP head pays it again. Without it,
+  the 31B `UD-Q5_K_XL` with MTP and vision would have been sized to
+  108K on a 32 GB card and run out of memory. The numbers are in
+  `scripts/hardware.py`, above the Gemma entries.
+- **It thinks only when asked**, so `kiln start` passes
+  `--reasoning on`. Qwen's template thinks by default. Either way the
+  thinking lands in `reasoning_content`, not in your code.
+- **Google's sampling**: temperature 1.0, top-p 0.95, top-k 64.
+- **Draft length 4**, the setting unsloth measured, rather than Qwen's 3.
+- **E4B keeps its per-layer embedding table in system RAM** (1.5–2.9 GB,
+  depending on the quant), so it needs that much less VRAM than its
+  file size suggests.
 
 ---
 
@@ -676,16 +758,16 @@ NOTES.md               why the tuned constants are what they are
 
 | Script | Purpose |
 |---|---|
-| `install.bat` | One-time setup: llama.cpp binaries, cloudflared, `models/`. Pinned to the CUDA 13.3 x64 asset. |
-| `update.bat` | Upgrade llama.cpp to the latest release, backing up the old build. Verifies MTP support afterward. |
+| `install.bat` | One-time setup: llama.cpp binaries, cloudflared, `models/`. Takes the newest CUDA build of the newest bNNNN release, with its matching cudart. |
+| `update.bat` | Upgrade llama.cpp to the latest release and its matching cudart, backing up the old build. Verifies MTP support afterward. |
 | `download.bat` | Weights + MTP head + vision projector, for one build. Resumable. |
-| `launch.bat` | Model picker: stock or abliterated, downloading first if needed. Takes `base` / `ablit` to skip the menu. |
+| `launch.bat` | Model picker: every build, Qwen and Gemma, downloading first if needed. Takes a variant name (`base`, `gemma-26b`, ...) to skip the menu. |
 | `start.bat` | Tuned launcher. Auto-detects build, quant, MTP, vision, VRAM and cores. |
 | `probe_hardware.ps1` | Fallback sizer for machines without Python. `hardware.py` is the normal path. |
 | `benchmark.bat` | Quant speed, ubatch sweep, KV precision, throughput vs depth. |
 | `quality.bat` | KL-divergence of each quant against Q8_0. |
 | `cleanup.bat` | Reclaim space from superseded GGUFs. Requires typing `DELETE`. |
-| `lib_variants.bat` | Resolves a build to its repo, filename prefix and Cursor alias. Reads the registry from `hardware.py`. |
+| `lib_variants.bat` | Resolves a build to its repo, filename prefix, Cursor alias, MTP head, projector and launch flags. Reads the registry from `hardware.py`. |
 | `lib_api_key.bat` | Generates the API key, locks the file to your account, hands back `API_KEY`. |
 | `lib_ui.bat` | ANSI palette for the CLI. Degrades to empty strings under `NO_COLOR`. |
 
@@ -711,7 +793,7 @@ NOTES.md               why the tuned constants are what they are
 | `start-cloudflared-once.sh` | Bring up the tunnel on its own. |
 | `benchmark.sh` / `quality.sh` / `cleanup.sh` | Shell twins of the Windows tools. |
 | `lib_variants.sh` / `lib_api_key.sh` | Shell twins of the Windows libraries. |
-| `lib_select.sh` | Picks the weights, MTP head, vision projector and context for a launch. Shared by all three start scripts. |
+| `lib_select.sh` | Picks the weights, MTP head, vision projector and context for a launch, and builds the per-family server flags. Shared by all three start scripts and the Slurm job. |
 | `lib_python.sh` | Finds a Python that actually runs, and strips the CR that Windows Python puts on every line. |
 
 ---

@@ -6,12 +6,13 @@ call "%~dp0lib_ui.bat"
 :: ============================================================
 ::  Qwen3.8-27B on RTX 5090 (32 GB) -- tuned launch
 ::
-::  Takes the variant to run as argument 1 ("base" or "ablit");
-::  launch.bat is the picker that supplies it. Everything below
-::  the variant lookup is identical for both -- the abliterated
-::  quants are re-ablations of the same unsloth GGUFs, so the
-::  sizing arithmetic and the MTP/vision files carry over
-::  unchanged. See lib_variants.bat.
+::  Takes the variant to run as argument 1 ("base", "ablit", or
+::  any family in scripts\hardware.py); launch.bat is the picker
+::  that supplies it. Everything that differs by family -- files,
+::  sizing, sampling, draft length -- comes from the registry
+::  through lib_variants.bat, so the rest of this is the same for
+::  all of them. The notes below are for Qwen3.8-27B, which this
+::  was tuned on.
 ::
 ::  Hardware this is sized for:
 ::    GPU  RTX 5090, 32606 MiB VRAM, Blackwell sm_120
@@ -67,7 +68,7 @@ goto parse_args
 if not defined WANT call :autopick_variant
 call "%~dp0lib_variants.bat" "%WANT%"
 if errorlevel 1 (
-    echo  ERROR: unknown variant "%WANT%" -- expected base, ablit, 9b or 4b.
+    echo  ERROR: unknown variant "%WANT%" -- see kiln help for the list.
     pause & exit /b 1
 )
 
@@ -103,30 +104,34 @@ if not defined MODEL (
 )
 
 :: ---- MTP head and vision projector -------------------------
-:: 27B-only, and each comes in two precisions. Take whichever is
-:: on disk, better first. The q4_0 head is 1.4 GB smaller than
+:: The family lists its own, better precision first; take
+:: whichever is on disk. Qwen's q4_0 head is 1.4 GB smaller than
 :: q8_0, which on a 24 GB card is the difference between keeping
 :: speculative decoding and losing it -- kiln get downloads
 :: whichever one the card had room for.
 set "MTP="
 set "MMPROJ="
-if "%V_MTP%"=="1" (
-    if exist "models\mtp-Qwen3.8-27B-Q8_0.gguf" set "MTP=models\mtp-Qwen3.8-27B-Q8_0.gguf"
-    if not defined MTP if exist "models\mtp-Qwen3.8-27B-Q4_0.gguf" set "MTP=models\mtp-Qwen3.8-27B-Q4_0.gguf"
-)
+for %%F in (%V_MTP_FILES%) do if not defined MTP if exist "models\%%F" set "MTP=models\%%F"
 
 :: --no-mtp: clear the head so USE_MTP stays 0 AND hardware.py is
 :: probed without it. The probe is what raises the context ceiling
 :: -- it converts the freed VRAM straight into KV cache.
 if "!NO_MTP!"=="1" set "MTP="
-if "%V_VISION%"=="1" (
-    if exist "models\mmproj-F16.gguf" set "MMPROJ=models\mmproj-F16.gguf"
-    if not defined MMPROJ if exist "models\mmproj-Qwen3.8-27B-Q8_0.gguf" set "MMPROJ=models\mmproj-Qwen3.8-27B-Q8_0.gguf"
-)
+for %%F in (%V_MMPROJ_FILES%) do if not defined MMPROJ if exist "models\%%F" set "MMPROJ=models\%%F"
 
 if not exist "%BINARY%" (
     echo  ERROR: %BINARY% not found. Run: kiln setup  ^(or kiln update^)
     pause & exit /b 1
+)
+
+:: ---- some families need a newer llama.cpp than any MTP probe ----
+:: Gemma 4's draft head and its tool-call grammar were fixed well
+:: after draft-mtp first appeared, so the --help probe below would
+:: pass on a build that cannot serve it properly. Checked before
+:: anything is stopped: a refusal leaves the running server alone.
+if not "%V_MIN_BUILD%"=="0" (
+    call :check_build
+    if errorlevel 1 ( pause & exit /b 1 )
 )
 
 :: ---- MTP requires a build with draft-mtp support (b9180+) ----
@@ -294,10 +299,12 @@ del "%CF_LOG%" >nul 2>&1
 ::  --reasoning-format deepseek
 ::                     puts chain-of-thought in message.reasoning_content
 ::                     so thinking tokens do not land in code output.
-::  --spec-draft-n-max 3
-::                     Qwen trains MTP for multi-step draft; 3 is the
-::                     llama.cpp default and matches the released head.
-::  sampling           Qwen's published thinking-mode values.
+::  --spec-draft-n-max per family: 3 for Qwen, the llama.cpp default
+::                     and what the released head was trained for; 4
+::                     for Gemma 4, the setting unsloth measured.
+::  sampling           each family's published values.
+::  --reasoning        set where the template does not think by
+::                     default (Gemma 4); Qwen's already does.
 :: ------------------------------------------------------------
 
 set ARGS=--model "%MODEL%"
@@ -312,7 +319,9 @@ set ARGS=%ARGS% --ubatch-size 1024
 set ARGS=%ARGS% --threads %CORES%
 set ARGS=%ARGS% --jinja
 set ARGS=%ARGS% --reasoning-format deepseek
-set ARGS=%ARGS% --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
+if not defined V_SAMPLING set "V_SAMPLING=--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0"
+set ARGS=%ARGS% %V_SAMPLING%
+if defined V_REASONING set ARGS=%ARGS% --reasoning %V_REASONING%
 set ARGS=%ARGS% --port %PORT% --host 0.0.0.0
 set ARGS=%ARGS% --alias "%ALIAS%"
 set ARGS=%ARGS% --api-key-file "api_key.txt"
@@ -321,7 +330,7 @@ if "%USE_MTP%"=="1" (
     set ARGS=!ARGS! --spec-type draft-mtp
     set ARGS=!ARGS! --spec-draft-model "%MTP%"
     set ARGS=!ARGS! --spec-draft-ngl 99
-    set ARGS=!ARGS! --spec-draft-n-max 3
+    set ARGS=!ARGS! --spec-draft-n-max %V_SPEC_N%
 )
 if "%USE_VISION%"=="1" (
     set ARGS=!ARGS! --mmproj "%MMPROJ%"
@@ -464,6 +473,12 @@ exit /b 0
 :: 27B outranks the abliterated one, so a machine holding several
 :: starts the one you would have picked by hand.
 :autopick_variant
+:: hardware.py knows every family's order; the checks below are the
+:: no-Python fallback.
+set "WANT="
+call :find_python
+if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --pick-on-disk 2^>nul`) do if "%%A"=="VARIANT" set "WANT=%%B"
+if defined WANT exit /b 0
 set "WANT=base"
 if exist "models\Qwen3.8-27B-*.gguf" exit /b 0
 set "WANT=ablit"
@@ -475,6 +490,28 @@ if exist "models\Qwen3.8-4B-*.gguf" exit /b 0
 :: Nothing at all: fall back to base so the error message that
 :: follows names a real variant to go and download.
 set "WANT=base"
+exit /b 0
+
+:: ------------------------------------------------------------
+:: :check_build -- errorlevel 1 when llama.cpp is older than the
+:: family needs. A build it cannot read gets a warning, not a
+:: refusal: the server will say so itself if it really is too old.
+:check_build
+set "BUILD=0"
+call :find_python
+if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --build "%BINARY%" 2^>nul`) do set "%%A=%%B"
+if "%BUILD%"=="0" (
+    echo  [WARN] could not read the llama.cpp build. %V_LABEL% needs
+    echo         b%V_MIN_BUILD% or newer.
+    exit /b 0
+)
+if %BUILD% LSS %V_MIN_BUILD% (
+    echo.
+    echo  ERROR: %V_LABEL% needs llama.cpp b%V_MIN_BUILD% or newer.
+    echo         This is b%BUILD%. Run: kiln update
+    echo.
+    exit /b 1
+)
 exit /b 0
 
 :: ------------------------------------------------------------

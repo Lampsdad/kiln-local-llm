@@ -13,8 +13,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Cursor's OpenAI base URL, with the API-key workaround on. Stopping
   the tunnel turns that workaround off and clears a trycloudflare URL.
   Cursor's saved key is left as it is: the desktop encrypts it.
+- **Gemma 4, opt-in.** `kiln get gemma-26b` and `kiln start gemma-26b`
+  serve Google's Gemma 4. There are four variants: `gemma-31b`,
+  `gemma-26b` (26B-A4B MoE), `gemma-12b` and `gemma-e4b`. Each one has
+  its own MTP draft head and vision projector, and the same arithmetic
+  as Qwen sizes the download and the context to your card. kiln never
+  picks Gemma on its own. `kiln hardware`, a bare `kiln get` and a bare
+  `kiln start` all stay on Qwen3.8, unless Gemma is the only thing
+  downloaded. If a Gemma model is too big for the card, kiln points you
+  at a smaller Gemma model. It never suggests E4B, which is weak at
+  tool calls. Gemma needs llama.cpp b11059 or newer, and `kiln start`
+  refuses an older build before it stops the running server.
+  `hardware.py --table gemma` prints the Gemma context table. The sizing
+  was checked by loading the 31B, 12B and E4B on a 5090. That showed
+  Gemma's attention scratch and its MTP head both cost VRAM per token.
+  Counting that keeps the 31B on a 32 GB card from running out of
+  memory. The benchmark measures and picks within the model line you
+  run, as it already did for abliterated builds, and it never picks
+  E4B while anything else was measured.
 
 ### Changed
+
+- **Each model family carries its own launch settings.** The registry in
+  `scripts/hardware.py` now holds each family's MTP head and projector,
+  sampling, draft length, reasoning flag and minimum llama.cpp build.
+  The start scripts read these instead of assuming Qwen's. Qwen launches
+  with exactly the flags it had before. The four Unix start scripts now
+  share one copy of this logic in `lib_select.sh`.
 
 - **Bare `kiln` opens the TUI.** `kiln` with no arguments (`./kiln.sh`
   on macOS and Linux) starts the full-screen app. `kiln status` still
@@ -37,6 +62,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`./kiln.sh get` on Fedora and Debian.** A plain `pip install` into
   the system Python is refused there. The download uses `huggingface_hub`
   when it is already installed, and otherwise installs it for the user.
+- **`kiln update` and `kiln setup` on Windows.** llama.cpp moved its
+  Windows CUDA builds from 13.3 to 13.4 at b11000. Both scripts were
+  pinned to 13.3, so `kiln update` failed with a 404. `kiln setup` also
+  read `/releases/latest`, which has no Windows CUDA build at all. Both
+  now take the newest bNNNN release. From it they take the newest CUDA
+  build that has a cudart zip of the same version, and they download
+  that zip too. `kiln setup` also failed to parse, with
+  `... was unexpected at this time`, in two places. One was its download
+  progress line. The other was the cloudflared block, which breaks on
+  the `(x86)` in the install path even when cloudflared is already
+  installed.
+- **The Windows status board shows the llama.cpp build again.** Newer
+  builds print `version: 0.6.0-dev (build 11624, ...)`, and the board
+  showed `build 0.6.0-dev`.
 
 ## [1.1.0] — 2026-10-01
 

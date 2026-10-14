@@ -42,11 +42,16 @@ All three numbers are read off the published config.json, not guessed:
 num_hidden_layers / full_attention_interval gives the full-attention
 count, and num_key_value_heads x head_dim gives the per-layer width.
 
+Gemma 4 gets the same treatment with sliding-window layers in place of
+the linear ones: only its global layers grow with context, and the
+sliding-window cache is a fixed cost like the recurrent state. The
+numbers are worked through above its registry entries.
+
 Usage:
     hardware.py --detect                 what is in this machine
     hardware.py --recommend              what to download and run on it
     hardware.py --size-model PATH [...]  context for a file already on disk
-    hardware.py --table                  the README matrix
+    hardware.py --table [gemma]          the README matrix
 """
 
 import argparse
@@ -167,7 +172,9 @@ QUANTS_27B = [
 #
 #   state_mib     VRAM that does not grow with context: here the
 #                 GatedDeltaNet layers' fixed recurrent state
-#   draft_kv_mib  the MTP head's own small KV cache
+#   draft_mib     what the MTP head takes beyond its file: here its
+#                 own small KV cache
+#   draft_ctx_bytes  and per token of context, on top of kv_bytes
 #   reasoning     the --reasoning value, or "" for the template's
 #                 default, which for Qwen is to think
 #   min_build     llama.cpp build below which start refuses. 0: Qwen
@@ -176,7 +183,8 @@ QUANTS_27B = [
 _QWEN = {
     "group": "qwen",
     "uncensored": False,
-    "draft_kv_mib": 512,
+    "draft_mib": 512,
+    "draft_ctx_bytes": 0,
     "spec_n_max": 3,        # llama.cpp's default; matches the released head
     "sampling": QWEN_SAMPLING,
     "reasoning": "",
@@ -269,23 +277,221 @@ MODELS = {
     }),
 }
 
+# --- Gemma 4: opt-in ---------------------------------------------
+#
+# Google's open family, Apache-2.0, from unsloth's GGUF repos, which
+# ship the UD quants, the vision projector and an MTP draft head side
+# by side. kiln never picks these for you (they are in no
+# FAMILY_ORDER); they run when named: kiln start gemma-26b.
+#
+# The architecture interleaves five sliding-window layers with one
+# global layer. llama.cpp keeps the sliding layers' cache at window +
+# ubatch cells whatever the context, so -- as with Qwen's DeltaNet
+# state -- only the global layers grow with context. Per token:
+#
+#   KV       global layers x global KV heads x 512 head-dim x 2 (K+V)
+#            x 34/32 (q8_0). Gemma's global layers share one projection
+#            for K and V, but llama.cpp normalises and caches them
+#            separately, so the 2 stays.
+#   scratch  one global layer's K+V again at f16 (flash attention
+#            dequantises it), plus the f16 mask: 2 bytes x 1024
+#            ubatch. Qwen pays this too, but against its larger KV it
+#            disappears into SAFETY; against Gemma's small one it is a
+#            fifth to two-fifths of the bill, so it is counted.
+#   kv_bytes = KV + scratch.  The MTP head attends over the same
+#            context and pays the scratch again: draft_ctx_bytes.
+#
+#   state_mib = sliding layers x KV heads x 256 x 2 x
+#               (window + 1024 ubatch) x 34/32
+#
+#            global x heads   KV     scratch  kv_bytes  sliding   state
+#   31B      10 x 4         43,520   10,240    53,760   50 x 16   850 MiB
+#   26B-A4B   5 x 2         10,880    6,144    17,024   25 x 8    213 MiB
+#   12B       8 x 1          8,704    4,096    12,800   40 x 8    340 MiB
+#   E4B       4 x 2          8,704    6,144    14,848   20 x 2     32 MiB
+#            (E4B: 512 window; of 42 layers the last 18 reuse earlier
+#            layers' cache)
+#
+# Read off each config.json (layer_types, num_global_key_value_heads,
+# global_head_dim, sliding_window, num_kv_shared_layers), then checked
+# on the 5090 at b11624 by loading each model at two contexts: per
+# token the 31B took 53,792 B, the 12B 12,792-12,960 and the E4B
+# 14,965, with the MTP head adding 4,059 per token on the 12B. The
+# fixed costs came in under COMPUTE_BUF_MIB + state_mib by ~1.4 GB,
+# which is margin, not error. The 26B was not loaded.
+#
+# The MTP heads are Google's "assistant" drafters (llama.cpp arch
+# gemma4-assistant). They read the target's KV cache rather than
+# keeping one: their fixed cost measured 4-163 MiB beyond the file.
+#
+# E4B's per-layer embedding table (256 x 42 layers x the 262K vocab)
+# stays in system RAM, so that much of each file never reaches the
+# GPU: host_bytes, per quant, from the GGUF headers.
+#
+# min_build: Gemma MTP landed in b9549, but the drafter (b10742),
+# vision (b10798) and required-tool-call grammar (b11059) fixes came
+# later. Tool calls are most of what Cursor sends.
+GEMMA_SAMPLING = "--temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0"
+
+
+def _gemma_extras(repo, stem, mtp_bytes, mmproj_bytes):
+    """The MTP head at the repo root (the Q8_0 one) and the F16
+    projector, renamed so it cannot collide with Qwen's."""
+    return {
+        "mtp_heads": {"q8_0": _extra(repo, "mtp-%s.gguf" % stem, mtp_bytes)},
+        "mmproj": {"f16": _extra(repo, "mmproj-F16.gguf", mmproj_bytes,
+                                 local="mmproj-%s-F16.gguf" % stem)},
+    }
+
+
+_GEMMA = {
+    "group": "gemma",
+    "uncensored": False,
+    "draft_mib": 256,
+    "spec_n_max": 4,        # unsloth's measured setting
+    "sampling": GEMMA_SAMPLING,
+    # Gemma 4 thinks only when asked; Qwen's template thinks by default.
+    "reasoning": "on",
+    "min_build": 11059,
+    "min_quality": 5,       # IQ4_XS-class, as for the Qwen 27B
+}
+
+MODELS.update({
+    "gemma-31b": dict(_GEMMA, **dict({
+        "label": "Gemma 4 31B",
+        "repo": "unsloth/gemma-4-31B-it-GGUF",
+        "prefix": "gemma-4-31B-it",
+        "alias": "gemma-4-31b",
+        "params": "31B",
+        "kv_bytes": 53760,
+        "draft_ctx_bytes": 10240,
+        "state_mib": 850,
+        "max_ctx": 262144,
+        "quants": [
+            ("UD-Q8_K_XL", 35020041152),
+            ("Q8_0",       32635677632),
+            ("UD-Q6_K_XL", 27521338304),
+            ("UD-Q5_K_XL", 21890429888),
+            ("UD-Q4_K_XL", 18822970304),
+            ("IQ4_XS",     16372460480),
+            ("UD-Q3_K_XL", 15380222912),
+            ("UD-IQ3_XXS", 11837782976),
+            ("UD-Q2_K_XL", 11774991296),
+            ("UD-IQ2_M",   10752820160),
+        ],
+    }, **_gemma_extras("unsloth/gemma-4-31B-it-GGUF", "gemma-4-31B-it",
+                       514687104, 1198957024))),
+    "gemma-26b": dict(_GEMMA, **dict({
+        "label": "Gemma 4 26B-A4B",
+        "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "prefix": "gemma-4-26B-A4B-it",
+        "alias": "gemma-4-26b-a4b",
+        "params": "26B-A4B",
+        "kv_bytes": 17024,
+        "draft_ctx_bytes": 6144,
+        "state_mib": 213,
+        "max_ctx": 262144,
+        "quants": [
+            ("UD-Q8_K_XL", 27636232928),
+            ("Q8_0",       26859861728),
+            ("UD-Q6_K_XL", 23295391456),
+            ("UD-Q5_K_XL", 21217769184),
+            ("UD-Q4_K_XL", 17010980576),
+            ("UD-IQ4_XS",  13597177568),
+            ("UD-Q3_K_XL", 12907280096),
+            ("UD-IQ3_XXS", 11416548832),
+            ("UD-Q2_K_XL", 10546934240),
+            ("UD-IQ2_M",   10014755296),
+        ],
+    }, **_gemma_extras("unsloth/gemma-4-26B-A4B-it-GGUF",
+                       "gemma-4-26B-A4B-it", 461766816, 1193058784))),
+    # unsloth spells this one in lower case, repo and files alike.
+    "gemma-12b": dict(_GEMMA, **dict({
+        "label": "Gemma 4 12B",
+        "repo": "unsloth/gemma-4-12b-it-GGUF",
+        "prefix": "gemma-4-12b-it",
+        "alias": "gemma-4-12b",
+        "params": "12B",
+        "kv_bytes": 12800,
+        "draft_ctx_bytes": 4096,
+        "state_mib": 340,
+        "max_ctx": 262144,
+        "quants": [
+            ("UD-Q8_K_XL", 13637327680),
+            ("Q8_0",       12669647680),
+            ("UD-Q6_K_XL", 10685012800),
+            ("UD-Q5_K_XL",  8606021440),
+            ("UD-Q4_K_XL",  7366423360),
+            ("IQ4_XS",      6375734080),
+            ("UD-Q3_K_XL",  6022684480),
+            ("UD-IQ3_XXS",  4639716160),
+            ("UD-Q2_K_XL",  4661419840),
+            ("UD-IQ2_M",    4213353280),
+        ],
+    }, **_gemma_extras("unsloth/gemma-4-12b-it-GGUF", "gemma-4-12b-it",
+                       465109248, 175115840))),
+    # Offered, never suggested -- not even to someone running Gemma on
+    # a card too small for the 12B, nor by the benchmark. It scores 42%
+    # on Tau2 to the 31B's 77%, and tool calls are the job.
+    "gemma-e4b": dict(_GEMMA, **dict({
+        "label": "Gemma 4 E4B",
+        "suggest": False,
+        "repo": "unsloth/gemma-4-E4B-it-GGUF",
+        "prefix": "gemma-4-E4B-it",
+        "alias": "gemma-4-e4b",
+        "params": "E4B",
+        "kv_bytes": 14848,
+        "draft_ctx_bytes": 6144,
+        "state_mib": 32,
+        "max_ctx": 131072,
+        # The per-layer embedding table, at the precision each quant
+        # stores it: Q8_0, Q5_K or Q4_K.
+        "host_bytes": {
+            "UD-Q8_K_XL": 2994733056, "Q8_0": 2994733056,
+            "UD-Q6_K_XL": 2994733056, "UD-Q5_K_XL": 2994733056,
+            "UD-Q4_K_XL": 1937768448, "IQ4_XS": 1937768448,
+            "UD-Q3_K_XL": 1937768448, "UD-IQ3_XXS": 1585446912,
+            "UD-Q2_K_XL": 1585446912, "UD-IQ2_M": 1585446912,
+        },
+        "quants": [
+            ("UD-Q8_K_XL", 8711507072),
+            ("Q8_0",       8192953472),
+            ("UD-Q6_K_XL", 7457762432),
+            ("UD-Q5_K_XL", 6656154752),
+            ("UD-Q4_K_XL", 5126306944),
+            ("IQ4_XS",     4715416704),
+            ("UD-Q3_K_XL", 4588440704),
+            ("UD-IQ3_XXS", 3717115008),
+            ("UD-Q2_K_XL", 3757419648),
+            ("UD-IQ2_M",   3545083008),
+        ],
+    }, **_gemma_extras("unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it",
+                       98653248, 990372672))),
+})
+
 # Derived rather than written down twice: a family has MTP or vision
 # exactly when it lists a head or a projector to load.
 for _fam in MODELS.values():
     _fam["mtp"] = bool(_fam["mtp_heads"])
     _fam["vision"] = bool(_fam["mmproj"])
 
-# Order families are tried in: best first.
+# Order families are tried in: best first. Only these are ever picked
+# for you.
 FAMILY_ORDER = ["base", "9b", "4b"]
 
 # Which families a sibling may be suggested from. Running a family
 # that cannot clear the bar on this card gets the best sibling that
-# can, rather than a jump to a different model line.
-SIBLINGS = {"qwen": FAMILY_ORDER}
+# can, rather than a jump to a different model line. E4B is left out
+# on purpose; see its entry.
+GEMMA_ORDER = ["gemma-31b", "gemma-26b", "gemma-12b"]
+SIBLINGS = {"qwen": FAMILY_ORDER, "gemma": GEMMA_ORDER}
 
 # The family `kiln start` runs when none is named and several are on
 # disk: best first, so it is the one you would have picked by hand.
-DISK_ORDER = ["base", "ablit", "9b", "4b"]
+# Qwen first: Gemma is opt-in, so it runs on its own only when it is
+# all there is.
+DISK_ORDER = ["base", "ablit", "9b", "4b",
+              "gemma-31b", "gemma-26b", "gemma-12b", "gemma-e4b"]
 
 # Named consumer tiers. Purely cosmetic -- nothing branches on the
 # name, it just gives the user something to match against the README
@@ -443,17 +649,19 @@ def detect_free_disk_mib(path="."):
 # ---------------------------------------------------------------
 
 def context_for(vram_mib, weights_mib, kv_bytes, state_mib,
-                mtp_mib=0, mmproj_mib=0, max_ctx=262144, draft_kv_mib=512):
+                mtp_mib=0, mmproj_mib=0, max_ctx=262144, draft_mib=512,
+                draft_ctx_bytes=0):
     """Largest context that fits, or 0 if the fixed costs alone
     exceed VRAM. Same arithmetic the 5090 was validated against."""
     if vram_mib <= 0 or weights_mib <= 0:
         return 0
     free = (vram_mib - DRIVER_RESERVE - weights_mib - mtp_mib - mmproj_mib
             - COMPUTE_BUF_MIB - state_mib
-            - (draft_kv_mib if mtp_mib else 0))
+            - (draft_mib if mtp_mib else 0))
     if free <= 0:
         return 0
-    ctx = int((free * SAFETY * MIB) / kv_bytes)
+    per_token = kv_bytes + (draft_ctx_bytes if mtp_mib else 0)
+    ctx = int((free * SAFETY * MIB) / per_token)
     ctx = (ctx // CTX_BLOCK) * CTX_BLOCK
     return min(ctx, max_ctx)
 
@@ -464,7 +672,18 @@ def fam_context(fam, vram_mib, weights_mib, mtp_mib=0, mmproj_mib=0,
     return context_for(vram_mib, weights_mib, fam["kv_bytes"],
                        fam["state_mib"], mtp_mib, mmproj_mib,
                        min(fam["max_ctx"], max_ctx or fam["max_ctx"]),
-                       fam["draft_kv_mib"])
+                       fam["draft_mib"], fam["draft_ctx_bytes"])
+
+
+def gpu_mib(fam, quant, nbytes):
+    """MiB of a weights file that ends up on the GPU: all of it, except
+    what the family keeps in system RAM (E4B's per-layer embeddings)."""
+    return mib(nbytes - fam.get("host_bytes", {}).get(quant, 0))
+
+
+def quant_of(fam, filename):
+    """UD-Q5_K_XL out of Qwen3.8-27B-UD-Q5_K_XL.gguf."""
+    return os.path.basename(filename)[len(fam["prefix"]) + 1:-len(".gguf")]
 
 
 def _combos(family_id):
@@ -527,7 +746,8 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
         for mtp_id, mmproj_id in _combos(family_id):
             mtp_mib = mib(fam["mtp_heads"][mtp_id].bytes) if mtp_id else 0
             mm_mib = mib(fam["mmproj"][mmproj_id].bytes) if mmproj_id else 0
-            ctx = fam_context(fam, vram_mib, mib(qbytes), mtp_mib, mm_mib)
+            ctx = fam_context(fam, vram_mib, gpu_mib(fam, q, qbytes),
+                              mtp_mib, mm_mib)
             if ctx == 0:
                 continue
             plan = {
@@ -683,6 +903,16 @@ def cmd_recommend(args):
     return 0
 
 
+def family_of(filename):
+    """The family a weights file belongs to, by its name, or None.
+    Longest prefix first, so "Huihui-Qwen3.8-27B-abliterated" is not
+    shadowed by a shorter prefix that is a substring of it."""
+    for fid in sorted(MODELS, key=lambda f: -len(MODELS[f]["prefix"])):
+        if filename.startswith(MODELS[fid]["prefix"] + "-"):
+            return fid
+    return None
+
+
 def cmd_size_model(args):
     """Context for a file already on disk. This is the path start.*
     takes: the weights are chosen, only the window is in question."""
@@ -690,21 +920,12 @@ def cmd_size_model(args):
         emit([("PROBED", 0), ("CTX", 0), ("ERROR", "no-such-file")])
         return 1
 
-    # Which family is this? Match on the filename prefix, longest
-    # first so "Huihui-Qwen3.8-27B-abliterated" is not shadowed by a
-    # shorter prefix that is a substring of it.
     base = os.path.basename(args.size_model)
-    fam_id = None
-    for fid in sorted(MODELS, key=lambda f: -len(MODELS[f]["prefix"])):
-        if base.startswith(MODELS[fid]["prefix"] + "-"):
-            fam_id = fid
-            break
-    if fam_id is None:
-        fam_id = "base"
-
+    fam_id = family_of(base) or "base"
     fam = MODELS[fam_id]
     vram = args.vram if args.vram else detect_gpu()[0]
-    weights = mib(os.path.getsize(args.size_model))
+    weights = gpu_mib(fam, quant_of(fam, base),
+                      os.path.getsize(args.size_model))
     mtp_mib = mib(os.path.getsize(args.mtp)) if args.mtp and os.path.isfile(args.mtp) else 0
     mm_mib = mib(os.path.getsize(args.mmproj)) if args.mmproj and os.path.isfile(args.mmproj) else 0
 
@@ -878,18 +1099,74 @@ def cmd_quants(args):
     return 0
 
 
+TABLE_CARDS = [(12288, "12 GB"), (16384, "16 GB"), (24564, "24 GB"),
+               (32607, "32 GB"), (49140, "48 GB")]
+
+
+def _fmt_ctx(ctx):
+    return "%dK" % (ctx // 1024) if ctx else "—"
+
+
 def cmd_table(args):
     """The README matrix, generated from the same arithmetic the
-    launcher uses -- so the docs cannot drift from the code."""
-    cards = [(12288, "12 GB"), (16384, "16 GB"), (24564, "24 GB"),
-             (32607, "32 GB"), (49140, "48 GB")]
+    launcher uses -- so the docs cannot drift from the code.
+    --table gemma prints the Gemma 4 section instead."""
+    if args.table == "gemma":
+        return _gemma_table()
+    _matrices(FAMILY_ORDER)
 
-    def fmt(ctx):
-        if ctx == 0:
-            return "—"
-        return "%dK" % (ctx // 1024)
+    # The matrix above fixes the MTP head at q8_0 and vision at f16.
+    # The recommendation below is free to take the smaller q4_0 head
+    # or drop vision, so it can legitimately show a larger window than
+    # the cell it came from. Say so rather than leaving the reader to
+    # discover the two tables disagree.
+    print("\nEvery cell above assumes the q8_0 MTP head and the f16 vision")
+    print("projector. The recommendation below may take the smaller q4_0")
+    print("head (-1.4 GB) or drop vision, so it can show a larger window")
+    print("than the matching cell above.")
 
-    for fam_id in FAMILY_ORDER:
+    print("\n**What each card is recommended**\n")
+    print("| Card | Tier | Model | Quant | MTP | Vision | Context |")
+    print("|---|---|---|---|---|---|---|")
+    for vram, label in TABLE_CARDS:
+        plan = recommend(vram)
+        tid, _ = tier_for(vram)
+        if not plan:
+            print("| %s | %s | — | — | — | — | does not fit |"
+                  % (label, tid))
+            continue
+        fam = MODELS[plan["family"]]
+        print("| %s | %s | %s | `%s` | %s | %s | %s |" % (
+            label, tid, fam["label"], plan["quant"],
+            plan["mtp"] or "off", plan["mmproj"] or "off",
+            _fmt_ctx(plan["ctx"])))
+    return 0
+
+
+def _gemma_table():
+    _matrices(GEMMA_ORDER + ["gemma-e4b"])
+    # Only the families a Gemma user is ever pointed at: E4B is left
+    # out here as it is from SIBLINGS.
+    print("\n**What each card runs, if you ask for Gemma 4**\n")
+    print("| Card | Model | Quant | MTP | Vision | Context |")
+    print("|---|---|---|---|---|---|")
+    for vram, label in TABLE_CARDS:
+        plan = next((p for p in (plan_for(vram, f) for f in GEMMA_ORDER)
+                     if p), None)
+        if not plan:
+            print("| %s | — | — | — | — | does not fit |" % label)
+            continue
+        print("| %s | %s | `%s` | %s | %s | %s |" % (
+            label, MODELS[plan["family"]]["label"], plan["quant"],
+            plan["mtp"] or "off", plan["mmproj"] or "off",
+            _fmt_ctx(plan["ctx"])))
+    return 0
+
+
+def _matrices(fam_ids):
+    cards = TABLE_CARDS
+    fmt = _fmt_ctx
+    for fam_id in fam_ids:
         fam = MODELS[fam_id]
         # The best head and projector: q8_0 and f16 in every family.
         mtp = next(iter(fam["mtp_heads"].items()), None)
@@ -906,38 +1183,11 @@ def cmd_table(args):
         for quant, qbytes in fam["quants"]:
             cells = []
             for vram, _ in cards:
-                ctx = fam_context(fam, vram, mib(qbytes),
+                ctx = fam_context(fam, vram, gpu_mib(fam, quant, qbytes),
                                   mib(mtp[1].bytes) if mtp else 0,
                                   mib(mm[1].bytes) if mm else 0)
                 cells.append(fmt(ctx))
             print("| `%s` | %s |" % (quant, " | ".join(cells)))
-
-    # The matrix above fixes the MTP head at q8_0 and vision at f16.
-    # The recommendation below is free to take the smaller q4_0 head
-    # or drop vision, so it can legitimately show a larger window than
-    # the cell it came from. Say so rather than leaving the reader to
-    # discover the two tables disagree.
-    print("\nEvery cell above assumes the q8_0 MTP head and the f16 vision")
-    print("projector. The recommendation below may take the smaller q4_0")
-    print("head (-1.4 GB) or drop vision, so it can show a larger window")
-    print("than the matching cell above.")
-
-    print("\n**What each card is recommended**\n")
-    print("| Card | Tier | Model | Quant | MTP | Vision | Context |")
-    print("|---|---|---|---|---|---|---|")
-    for vram, label in cards:
-        plan = recommend(vram)
-        tid, _ = tier_for(vram)
-        if not plan:
-            print("| %s | %s | — | — | — | — | does not fit |"
-                  % (label, tid))
-            continue
-        fam = MODELS[plan["family"]]
-        print("| %s | %s | %s | `%s` | %s | %s | %s |" % (
-            label, tid, fam["label"], plan["quant"],
-            plan["mtp"] or "off", plan["mmproj"] or "off",
-            fmt(plan["ctx"])))
-    return 0
 
 
 def main():
@@ -954,7 +1204,9 @@ def main():
     g.add_argument("--detect", action="store_true")
     g.add_argument("--recommend", action="store_true")
     g.add_argument("--size-model", metavar="PATH")
-    g.add_argument("--table", action="store_true")
+    g.add_argument("--table", nargs="?", const="qwen",
+                   choices=["qwen", "gemma"],
+                   help="the README matrix; gemma for the Gemma 4 one")
     g.add_argument("--variant", metavar="ID",
                    help="emit V_* registry fields for one family")
     g.add_argument("--quants", metavar="ID",

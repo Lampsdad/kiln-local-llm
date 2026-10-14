@@ -116,6 +116,8 @@ class Setup:
         self.quant = model["quant"]
         self.alias = model["alias"]
         self.uncensored = bool(model.get("uncensored"))
+        self.line = line_of(self.variant)
+        self.suggest = suggestable(self.variant)
         self.mtp = mtp
         # --no-mtp only means something when there is a head to drop.
         self.no_mtp = has_head and not mtp
@@ -151,7 +153,7 @@ def setups(status):
     out = []
     for fam_id in control.START_ORDER:
         m = by_id.get(fam_id)
-        if not m or not m["quant"]:
+        if not m or not m["quant"] or control.too_old(status["llama"], m):
             continue
         if m["has_mtp_head"] and mtp_ok:
             out.append(Setup(m, True, True, m["ctx"]))
@@ -176,10 +178,37 @@ def runs_uncensored(status, preferred=""):
     return bool(m and m.get("uncensored"))
 
 
-def default_setups(found, uncensored):
+def line_of(variant):
+    """The model line a family belongs to: "qwen" or "gemma"."""
+    return hardware.MODELS.get(variant, {}).get("group", "qwen")
+
+
+def suggestable(variant):
+    """False for a family kiln offers but never recommends (Gemma 4 E4B)."""
+    return hardware.MODELS.get(variant, {}).get("suggest", True)
+
+
+def runs_line(status, preferred=""):
+    """The model line of the build the user runs, chosen as for
+    runs_uncensored."""
+    if not preferred:
+        preferred = ((load() or {}).get("chosen") or {}).get("variant")
+    return line_of(preferred or status.get("start_default") or "")
+
+
+def _narrow(rows, *keeps):
+    """Apply each filter in turn, skipping any that would leave none."""
+    for keep in keeps:
+        rows = [r for r in rows if keep(r)] or rows
+    return rows
+
+
+def default_setups(found, uncensored, line="qwen"):
     """What a run measures unless told otherwise: the setups of the kind
     the user runs (see recommend), or all of them if there are none."""
-    return [s for s in found if s.uncensored == uncensored] or found
+    return _narrow(found, lambda s: s.line == line,
+                   lambda s: s.uncensored == uncensored,
+                   lambda s: s.suggest)
 
 
 def estimate_minutes(n, depth):
@@ -501,22 +530,25 @@ def tied(a, b):
     return lo >= hi * (1 - NOISE)
 
 
-def recommend(results, min_ctx=None, uncensored=False):
+def recommend(results, min_ctx=None, uncensored=False, line="qwen"):
     """{"pick", "fastest", "roomiest", "reason", "close", "set_aside"}
     over the setups that measured cleanly, or None when none did.
 
-    Only builds of the kind the user runs are weighed, stock unless
-    uncensored is set: an abliterated build is the same size and speed
-    as the stock one, so choosing it is about content, not hardware.
-    The others land in "set_aside"; when nothing of the kind measured,
-    everything is weighed. "close" lists the setups that also clear the
-    bar and tie with the pick on speed (see tied)."""
+    Only builds of the kind the user runs are weighed: the same model
+    line (Qwen unless line says Gemma), and stock unless uncensored is
+    set. Which line, and whether abliterated, are choices about the
+    model, not the hardware. E4B is not weighed while anything else
+    is: it is too weak at tool calls to recommend. The others land in
+    "set_aside"; when nothing of the kind measured, everything is
+    weighed. "close" lists the setups that also clear the bar and tie
+    with the pick on speed (see tied)."""
     floor = hardware.MIN_CTX if min_ctx is None else min_ctx
     ok = [r for r in results if not r.get("error") and r.get("gen_tps")]
     if not ok:
         return None
-    kind = [r for r in ok if is_uncensored(r) == uncensored]
-    pool = kind or ok
+    pool = _narrow(ok, lambda r: line_of(r.get("variant")) == line,
+                   lambda r: is_uncensored(r) == uncensored,
+                   lambda r: suggestable(r.get("variant")))
     set_aside = [r for r in ok if r not in pool]
     fastest = max(pool, key=lambda r: r["gen_tps"])
     roomiest = max(pool, key=lambda r: (r.get("ctx") or 0, r["gen_tps"]))
@@ -534,10 +566,16 @@ def recommend(results, min_ctx=None, uncensored=False):
             "reason": reason, "close": close, "set_aside": set_aside}
 
 
-def set_aside_note(rec, uncensored=False):
+def set_aside_note(rec, uncensored=False, line="qwen"):
     """One sentence on the builds recommend left out, or ""."""
     if not rec["set_aside"]:
         return ""
+    if any(line_of(r.get("variant")) != line for r in rec["set_aside"]):
+        return ("Rows from the other model line are compared but not "
+                "picked: Qwen or Gemma is your call, not the hardware's")
+    if all(not suggestable(r.get("variant")) for r in rec["set_aside"]):
+        return ("Gemma 4 E4B rows are compared but not picked: it is too "
+                "weak at tool calls to recommend")
     if uncensored:
         return ("Only abliterated rows are picked from, since that is the "
                 "build you run; the stock rows are there to compare")
@@ -610,7 +648,7 @@ def setup_title(r):
                           "MTP" if r.get("mtp") else "no MTP")
 
 
-def report(doc, uncensored=False):
+def report(doc, uncensored=False, line="qwen"):
     """A markdown table for a hardware report or an issue."""
     m = doc.get("machine", {})
     lines = [
@@ -635,7 +673,7 @@ def report(doc, uncensored=False):
             _num(r.get("accept_pct"), "%.0f%%"),
             _num(r.get("deep_gen_tps"), "%.1f"),
             _num((r.get("vram_used_mib") or 0) / 1024 or None, "%.1f GB")))
-    rec = recommend(doc["results"], uncensored=uncensored)
+    rec = recommend(doc["results"], uncensored=uncensored, line=line)
     if rec:
         lines += ["", "Pick: %s -- %s." % (setup_title(rec["pick"]),
                                            rec["reason"])]
@@ -643,7 +681,7 @@ def report(doc, uncensored=False):
             lines.append("Within run-to-run noise of it: %s."
                          % ", ".join(setup_title(r) for r in rec["close"]))
         if rec["set_aside"]:
-            lines.append(set_aside_note(rec, uncensored) + ".")
+            lines.append(set_aside_note(rec, uncensored, line) + ".")
     return "\n".join(lines)
 
 
@@ -669,23 +707,26 @@ def main(argv=None):
     ctl = control.Control()
     status = ctl.status()
     uncensored = runs_uncensored(status)
+    line = runs_line(status)
     if args.report:
         doc = load()
         if not doc:
             print("No benchmark results yet.")
             return 1
-        print(report(doc, uncensored))
+        print(report(doc, uncensored, line))
         return 0
 
     found = setups(status)
     if not found:
         print("Nothing to measure: no weights downloaded. Run: kiln get")
         return 1
-    usual = default_setups(found, uncensored)
+    usual = default_setups(found, uncensored, line)
     if args.list:
+        width = max(len(s.id) for s in found)
         for s in found:
-            print("%s %-12s %s  (%s context)" % ("*" if s in usual else " ",
-                                                 s.id, s.title, kctx(s.ctx)))
+            print("%s %-*s %s  (%s context)" % ("*" if s in usual else " ",
+                                                width, s.id, s.title,
+                                                kctx(s.ctx)))
         print("\n* measured when no setups are named")
         return 0
     chosen = [s for s in found if s.id in args.ids] if args.ids else usual
@@ -719,7 +760,7 @@ def main(argv=None):
         doc = save(runner.results, depth, ctl) if runner.results else None
     if doc:
         print()
-        print(report(doc, uncensored))
+        print(report(doc, uncensored, line))
         print("\nSaved to %s" % os.path.basename(RESULTS_FILE))
     if interrupted:
         return 130

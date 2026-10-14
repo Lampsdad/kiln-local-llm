@@ -3,18 +3,20 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0..\.."
 
 :: ============================================================
-::  Download: Qwen3.8 weights, sized to the machine present.
+::  Download: model weights, sized to the machine present.
 ::
-::  Takes the variant as argument 1 ("base", "ablit", "9b",
-::  "4b") and asks if it is missing. launch.bat supplies it.
+::  Takes the variant as argument 1 ("base", "ablit", "9b", "4b",
+::  "gemma-26b", ...) and asks if it is missing. launch.bat
+::  supplies it.
 ::
 ::  Up to three separate files make up a full install:
 ::    1. weights   -- per variant, see lib_variants.bat
-::    2. MTP head  -- ggml-org/Qwen3.8-27B-GGUF  (speculative decoding)
-::    3. mmproj    -- vision encoder
+::    2. MTP head  -- speculative decoding, where the family has one
+::    3. mmproj    -- vision encoder, likewise
 ::
-::  Files 2 and 3 exist for the 27B variants only, come from the
-::  same place for BOTH of them, and are downloaded once.
+::  Which files 2 and 3 are, and where they come from, is per
+::  family in scripts\hardware.py. For the two Qwen3.8-27B variants
+::  they come from the same place and are downloaded once.
 ::  huihui-ai ablates the language layers of unsloth's own UD
 ::  quants and states the MTP head and vision tower are left
 ::  untouched, so the stock ones stay correct -- the second 27B
@@ -81,6 +83,10 @@ echo   %M1% [1] Qwen3.8-27B              stock Qwen release
 echo   %M2% [2] Qwen3.8-27B abliterated  refusal behaviour removed
 echo   %M3% [3] Qwen3.8-9B distill       third-party, text-only
 echo   %M4% [4] Qwen3.8-4B distill       third-party, text-only
+echo     [5] Gemma 4 31B              Google, dense, 32 GB and up
+echo     [6] Gemma 4 26B-A4B          Google, MoE with 4B active, fast
+echo     [7] Gemma 4 12B              Google, dense, 12-16 GB
+echo     [8] Gemma 4 E4B              Google, small, weak at tool calls
 echo.
 echo      * = fits this machine best
 echo.
@@ -89,8 +95,11 @@ echo   the smaller Qwen3.5 architectures. They are NOT Qwen releases
 echo   and have no MTP head and no vision tower, but they beat a 27B
 echo   crushed into 2 bits on a small card.
 echo.
+echo   5 to 8 are Gemma 4, which kiln never picks on its own. Each has
+echo   an MTP head and vision, and needs llama.cpp b11059 or newer.
+echo.
 set "VCHOICE="
-set /p VCHOICE="Enter choice [1-4] (default=recommended): "
+set /p VCHOICE="Enter choice [1-8] (default=recommended): "
 if not defined VCHOICE (
     set "WANT=%REC_FAMILY%"
     if not defined WANT set "WANT=base"
@@ -99,11 +108,15 @@ if "!VCHOICE!"=="1" set "WANT=base"
 if "!VCHOICE!"=="2" set "WANT=ablit"
 if "!VCHOICE!"=="3" set "WANT=9b"
 if "!VCHOICE!"=="4" set "WANT=4b"
+if "!VCHOICE!"=="5" set "WANT=gemma-31b"
+if "!VCHOICE!"=="6" set "WANT=gemma-26b"
+if "!VCHOICE!"=="7" set "WANT=gemma-12b"
+if "!VCHOICE!"=="8" set "WANT=gemma-e4b"
 
 :have_variant
 call "%~dp0lib_variants.bat" "%WANT%"
 if errorlevel 1 (
-    echo  ERROR: unknown variant "%WANT%" -- expected base, ablit, 9b or 4b.
+    echo  ERROR: unknown variant "%WANT%" -- see kiln help for the list.
     pause & exit /b 1
 )
 
@@ -167,6 +180,8 @@ set "REC_MTP_FILE="
 set "REC_MMPROJ_FILE="
 set "REC_MTP_REPO="
 set "REC_MMPROJ_REPO="
+set "REC_MTP_LOCAL="
+set "REC_MMPROJ_LOCAL="
 set "REC_CTX=0"
 set "REC_TOTAL_GB=%SIZE%"
 set "REC_BELOW_MIN=0"
@@ -177,8 +192,8 @@ set "FILE=%V_PREFIX%-%QUANT%.gguf"
 echo.
 echo  Will download:
 echo    weights : %FILE%  (~%SIZE% GB)
-if defined REC_MTP_FILE    echo    MTP head: %REC_MTP_FILE%
-if defined REC_MMPROJ_FILE echo    vision  : %REC_MMPROJ_FILE%
+if defined REC_MTP_FILE    echo    MTP head: %REC_MTP_LOCAL%
+if defined REC_MMPROJ_FILE echo    vision  : %REC_MMPROJ_LOCAL%
 if "%PROBED%"=="1" (
     set /a SHOWCTX=%REC_CTX%/1024
     echo.
@@ -220,11 +235,11 @@ call :fetch "%V_REPO%" "%FILE%"
 if errorlevel 1 goto failed
 
 if defined REC_MMPROJ_FILE (
-    call :fetch "%REC_MMPROJ_REPO%" "%REC_MMPROJ_FILE%"
+    call :fetch "%REC_MMPROJ_REPO%" "%REC_MMPROJ_FILE%" "%REC_MMPROJ_LOCAL%"
     if errorlevel 1 goto failed
 )
 if defined REC_MTP_FILE (
-    call :fetch "%REC_MTP_REPO%" "%REC_MTP_FILE%"
+    call :fetch "%REC_MTP_REPO%" "%REC_MTP_FILE%" "%REC_MTP_LOCAL%"
     if errorlevel 1 goto failed
 )
 
@@ -251,19 +266,27 @@ pause
 exit /b 1
 
 :: ------------------------------------------------------------
+:: :fetch <repo> <name> [local name]
+:: Saves <name> as models\<local name>, which defaults to <name>.
+:: A different local name is how two publishers' files of the same
+:: name (unsloth's mmproj-F16.gguf, for Qwen and for Gemma) both fit
+:: in models\: it downloads aside, then moves into place.
 :fetch
 set "REPO=%~1"
 set "TARGET=%~2"
-if exist "models\%TARGET%" (
-    echo  [OK] already present: %TARGET%
+set "LOCAL=%~3"
+if not defined LOCAL set "LOCAL=%TARGET%"
+if exist "models\%LOCAL%" (
+    echo  [OK] already present: %LOCAL%
     exit /b 0
 )
 echo.
 echo  [*] Downloading %TARGET% from %REPO% ...
 :: No %-formatting in this one-liner: cmd.exe pairs up percent
 :: signs across the whole line, so a Python '%' operator sitting
-:: alongside %REPO% / %TARGET% gets eaten during expansion.
-%PY_EXE% -c "from huggingface_hub import hf_hub_download; import os; p=hf_hub_download(repo_id='%REPO%', filename='%TARGET%', local_dir='models'); print('    saved:', p, '(' + str(round(os.path.getsize(p)/1e9, 1)) + ' GB)')"
+:: alongside %REPO% / %TARGET% gets eaten during expansion. And no
+:: if-statement: one -c line only takes expressions after a ';'.
+%PY_EXE% -c "from huggingface_hub import hf_hub_download; import os; same='%TARGET%'=='%LOCAL%'; d=os.path.join('models', '%LOCAL%'); p=hf_hub_download(repo_id='%REPO%', filename='%TARGET%', local_dir='models' if same else os.path.join('models', '.download')); same or os.replace(p, d); print('    saved:', d, '(' + str(round(os.path.getsize(d)/1e9, 1)) + ' GB)')"
 if errorlevel 1 exit /b 1
 exit /b 0
 
