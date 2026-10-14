@@ -10,10 +10,15 @@ cd /d "%~dp0..\.."
 ::  than that will load the model but silently lose the ~1.5-2x
 ::  MTP speedup -- `--spec-type draft-mtp` is rejected outright.
 ::
-::  Target: win-cuda-13.3-x64 (RTX 5090 / Blackwell sm_120)
+::  Gemma 4 needs b11059 or newer for its draft head, vision and
+::  tool-call fixes.
+::
+::  Target: the newest win-cuda-*-x64 build the release ships
+::  (13.4 as of b11000; the RTX 5090 / Blackwell needs 12.8+), with
+::  the cudart zip of the SAME CUDA version. The minor version moves:
+::  pinning 13.3 broke this script the day llama.cpp went to 13.4.
 :: ============================================================
 
-set ASSET_PATTERN=bin-win-cuda-13.3-x64
 set BACKUP=llama-bin-backup
 
 echo ============================================================
@@ -59,7 +64,21 @@ if "%TAG%"=="" (
 echo  Latest build    : %TAG%
 echo.
 
-set ZIP=llama-%TAG%-%ASSET_PATTERN%.zip
+:: ---- which build of it ----
+:: Each line PowerShell prints is "<sort key> <llama zip> <cudart
+:: zip>", best CUDA version first; the first line wins. Only builds
+:: whose matching cudart zip is in the same release count -- a
+:: llama-server without its own CUDA runtime loads and then cannot
+:: see the GPU. The parentheses keep the second set inside the if:
+:: `if COND set A & set B` would run set B for every line.
+set "ZIP="
+set "CUDART="
+for /f "usebackq tokens=2,3" %%A in (`powershell -NoProfile -Command "$r = Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/%TAG%'; $n = @($r.assets | ForEach-Object { $_.name }); $n | Where-Object { $_ -match '^llama-b[0-9]+-bin-win-cuda-[0-9]+\.[0-9]+-x64\.zip$' } | ForEach-Object { $v = $_ -replace '^.*-cuda-([0-9]+\.[0-9]+)-x64\.zip$','$1'; $c = 'cudart-llama-bin-win-cuda-' + $v + '-x64.zip'; if ($n -contains $c) { '{0:D3}{1:D3} {2} {3}' -f [int]$v.Split('.')[0], [int]$v.Split('.')[1], $_, $c } } | Sort-Object -Descending"`) do if not defined ZIP (set "ZIP=%%A" & set "CUDART=%%B")
+if not defined ZIP (
+    echo  ERROR: %TAG% has no Windows x64 CUDA build with a matching
+    echo  cudart zip. See https://github.com/ggml-org/llama.cpp/releases
+    pause & exit /b 1
+)
 set URL=https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%ZIP%
 
 :: ---- download ----
@@ -99,9 +118,14 @@ if exist "llama-bin\build\bin\llama-server.exe" (
 )
 
 :: ---- CUDA runtime DLLs ----
-:: The main zip omits cudart. Carry them over from the backup if
-:: the new archive did not ship them.
-if not exist "llama-bin\cudart64_13.dll" (
+:: The main zip omits cudart. Fetch the zip built for the same CUDA
+:: version; only if that fails, carry the old DLLs over from the
+:: backup, which works when the major version did not change.
+echo  Downloading %CUDART% ...
+powershell -NoProfile -Command ^
+    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%CUDART%' -OutFile '%TEMP%\%CUDART%'; Expand-Archive -LiteralPath '%TEMP%\%CUDART%' -DestinationPath 'llama-bin' -Force } catch { Write-Host $_.Exception.Message; exit 1 }"
+del "%TEMP%\%CUDART%" >nul 2>&1
+if not exist "llama-bin\cudart64_13.dll" if not exist "llama-bin\cudart64_12.dll" (
     if exist "%BACKUP%\cudart64_13.dll" (
         echo  Carrying CUDA runtime DLLs over from the previous install...
         copy /Y "%BACKUP%\cublas64_13.dll"   "llama-bin\" >nul 2>&1
@@ -111,7 +135,7 @@ if not exist "llama-bin\cudart64_13.dll" (
         echo.
         echo  WARNING: no CUDA runtime DLLs found. If the server fails to
         echo  start, download and extract this into llama-bin\ :
-        echo    https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/cudart-llama-bin-win-cuda-13.3-x64.zip
+        echo    https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%CUDART%
     )
 )
 
