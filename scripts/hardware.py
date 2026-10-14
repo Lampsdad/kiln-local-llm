@@ -55,15 +55,18 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import namedtuple
 
 MIB = 1024 * 1024
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(os.path.dirname(HERE), "models")
 
 # ---------------------------------------------------------------
 #  Fixed VRAM costs that do not scale with context length.
 #  Measured on the 5090; they are the same allocations on any card.
 # ---------------------------------------------------------------
 COMPUTE_BUF_MIB = 2048   # at --ubatch-size 1024
-DRAFT_KV_MIB    = 512    # the draft model's own small KV cache
 DRIVER_RESERVE  = 1536   # desktop compositor / driver overhead
 
 # Allocation is not exact: buffers fragment, the compute buffer grows
@@ -106,21 +109,36 @@ CTX_BLOCK = 4096
 #  are deliberately left out so one ladder covers both variants.
 # ---------------------------------------------------------------
 
+# A file that rides along with the weights: an MTP draft head or a
+# vision projector. `remote` is its name in the Hugging Face repo and
+# `local` its name in models/. They differ where two publishers use
+# one name for different files: unsloth calls both the Qwen and the
+# Gemma projector mmproj-F16.gguf, and a download that finds a file of
+# that name already present skips it.
+Extra = namedtuple("Extra", "repo remote local bytes")
+
+
+def _extra(repo, remote, nbytes, local=None):
+    return Extra(repo, remote, local or remote, nbytes)
+
+
 # MTP heads and the vision projector are 27B-only, and are shared by
 # the stock and abliterated variants: huihui ablates the language
 # layers and leaves these untouched.
-MTP_REPO = "ggml-org/Qwen3.8-27B-GGUF"
-MTP_HEADS = {
-    # id: (filename, bytes) -- best first
-    "q8_0": ("mtp-Qwen3.8-27B-Q8_0.gguf", 3164006688),
-    "q4_0": ("mtp-Qwen3.8-27B-Q4_0.gguf", 1680271648),
+QWEN_MTP_REPO = "ggml-org/Qwen3.8-27B-GGUF"
+QWEN_MTP_HEADS = {
+    # best first
+    "q8_0": _extra(QWEN_MTP_REPO, "mtp-Qwen3.8-27B-Q8_0.gguf", 3164006688),
+    "q4_0": _extra(QWEN_MTP_REPO, "mtp-Qwen3.8-27B-Q4_0.gguf", 1680271648),
 }
 
-MMPROJ = {
-    # id: (repo, filename, bytes)
-    "f16":  ("unsloth/Qwen3.8-27B-GGUF", "mmproj-F16.gguf", 927607488),
-    "q8_0": (MTP_REPO, "mmproj-Qwen3.8-27B-Q8_0.gguf", 629247008),
+QWEN_MMPROJ = {
+    "f16":  _extra("unsloth/Qwen3.8-27B-GGUF", "mmproj-F16.gguf", 927607488),
+    "q8_0": _extra(QWEN_MTP_REPO, "mmproj-Qwen3.8-27B-Q8_0.gguf", 629247008),
 }
+
+# Qwen's published thinking-mode values.
+QWEN_SAMPLING = "--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0"
 
 # Lowest quant index still worth serving, per family. Below this the
 # model stops being good at the job rather than merely getting worse
@@ -145,24 +163,45 @@ QUANTS_27B = [
     ("UD-IQ2_S",    8371970048,  8424398848),
 ]
 
+# What every Qwen3.8 family shares; each entry below adds its own.
+#
+#   state_mib     VRAM that does not grow with context: here the
+#                 GatedDeltaNet layers' fixed recurrent state
+#   draft_kv_mib  the MTP head's own small KV cache
+#   reasoning     the --reasoning value, or "" for the template's
+#                 default, which for Qwen is to think
+#   min_build     llama.cpp build below which start refuses. 0: Qwen
+#                 runs on any build, and the MTP head is probed for
+#                 separately (it needs b9180)
+_QWEN = {
+    "group": "qwen",
+    "uncensored": False,
+    "draft_kv_mib": 512,
+    "spec_n_max": 3,        # llama.cpp's default; matches the released head
+    "sampling": QWEN_SAMPLING,
+    "reasoning": "",
+    "min_build": 0,
+    "mtp_heads": {},
+    "mmproj": {},
+}
+
 MODELS = {
-    "base": {
+    "base": dict(_QWEN, **{
         "label": "Qwen3.8-27B",
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "prefix": "Qwen3.8-27B",
         "alias": "qwen3.8-27b",
-        "uncensored": False,
         "params": "27B",
         "kv_bytes": 34816,      # 16 full-attn layers
-        "recurrent_mib": 160,   # 48 GatedDeltaNet layers, fixed state
+        "state_mib": 160,       # 48 GatedDeltaNet layers, fixed state
         "max_ctx": 262144,
-        "mtp": True,
-        "vision": True,
+        "mtp_heads": QWEN_MTP_HEADS,
+        "mmproj": QWEN_MMPROJ,
         "quants": [(n, a) for n, a, _ in QUANTS_27B],
         "min_quality": 5,       # UD-IQ4_XS; see MIN_QUALITY note above
         "rank": 3,              # quality rank across families, high = better
-    },
-    "ablit": {
+    }),
+    "ablit": dict(_QWEN, **{
         "label": "Qwen3.8-27B abliterated",
         "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
         "prefix": "Huihui-Qwen3.8-27B-abliterated",
@@ -170,14 +209,14 @@ MODELS = {
         "uncensored": True,
         "params": "27B",
         "kv_bytes": 34816,
-        "recurrent_mib": 160,
+        "state_mib": 160,
         "max_ctx": 262144,
-        "mtp": True,
-        "vision": True,
+        "mtp_heads": QWEN_MTP_HEADS,
+        "mmproj": QWEN_MMPROJ,
         "quants": [(n, b) for n, _, b in QUANTS_27B],
         "min_quality": 5,
         "rank": 3,
-    },
+    }),
     # --- smaller families, for cards a 27B has no business on -------
     #
     # Qwen shipped no small dense sibling in the 3.8 family: the
@@ -190,18 +229,15 @@ MODELS = {
     # text-only: the GGUF repos ship no mmproj and no MTP head, so
     # vision and the speculative-decoding speedup are unavailable
     # regardless of card.
-    "9b": {
+    "9b": dict(_QWEN, **{
         "label": "Qwen3.8-9B distill",
         "repo": "empero-ai/Qwen3.8-9B-Distill-GGUF",
         "prefix": "Qwen3.8-9B",
         "alias": "qwen3.8-9b",
-        "uncensored": False,
         "params": "9B",
         "kv_bytes": 17408,      # 8 full-attn layers
-        "recurrent_mib": 64,    # 24 linear layers, narrower state
+        "state_mib": 64,        # 24 linear layers, narrower state
         "max_ctx": 262144,
-        "mtp": False,
-        "vision": False,
         "third_party": True,
         "quants": [
             ("Q8_0",   9786060096),
@@ -211,19 +247,16 @@ MODELS = {
         ],
         "min_quality": 3,       # Q4_K_M; the whole ladder is usable
         "rank": 2,
-    },
-    "4b": {
+    }),
+    "4b": dict(_QWEN, **{
         "label": "Qwen3.8-4B distill",
         "repo": "empero-ai/Qwen3.8-4B-Distill-GGUF",
         "prefix": "Qwen3.8-4B",
         "alias": "qwen3.8-4b",
-        "uncensored": False,
         "params": "4B",
         "kv_bytes": 17408,
-        "recurrent_mib": 64,
+        "state_mib": 64,
         "max_ctx": 262144,
-        "mtp": False,
-        "vision": False,
         "third_party": True,
         "quants": [
             ("Q8_0",   4610579744),
@@ -233,11 +266,26 @@ MODELS = {
         ],
         "min_quality": 3,
         "rank": 1,
-    },
+    }),
 }
+
+# Derived rather than written down twice: a family has MTP or vision
+# exactly when it lists a head or a projector to load.
+for _fam in MODELS.values():
+    _fam["mtp"] = bool(_fam["mtp_heads"])
+    _fam["vision"] = bool(_fam["mmproj"])
 
 # Order families are tried in: best first.
 FAMILY_ORDER = ["base", "9b", "4b"]
+
+# Which families a sibling may be suggested from. Running a family
+# that cannot clear the bar on this card gets the best sibling that
+# can, rather than a jump to a different model line.
+SIBLINGS = {"qwen": FAMILY_ORDER}
+
+# The family `kiln start` runs when none is named and several are on
+# disk: best first, so it is the one you would have picked by hand.
+DISK_ORDER = ["base", "ablit", "9b", "4b"]
 
 # Named consumer tiers. Purely cosmetic -- nothing branches on the
 # name, it just gives the user something to match against the README
@@ -394,15 +442,15 @@ def detect_free_disk_mib(path="."):
 #  Sizing
 # ---------------------------------------------------------------
 
-def context_for(vram_mib, weights_mib, kv_bytes, recurrent_mib,
-                mtp_mib=0, mmproj_mib=0, max_ctx=262144):
+def context_for(vram_mib, weights_mib, kv_bytes, state_mib,
+                mtp_mib=0, mmproj_mib=0, max_ctx=262144, draft_kv_mib=512):
     """Largest context that fits, or 0 if the fixed costs alone
     exceed VRAM. Same arithmetic the 5090 was validated against."""
     if vram_mib <= 0 or weights_mib <= 0:
         return 0
     free = (vram_mib - DRIVER_RESERVE - weights_mib - mtp_mib - mmproj_mib
-            - COMPUTE_BUF_MIB - recurrent_mib
-            - (DRAFT_KV_MIB if mtp_mib else 0))
+            - COMPUTE_BUF_MIB - state_mib
+            - (draft_kv_mib if mtp_mib else 0))
     if free <= 0:
         return 0
     ctx = int((free * SAFETY * MIB) / kv_bytes)
@@ -410,15 +458,21 @@ def context_for(vram_mib, weights_mib, kv_bytes, recurrent_mib,
     return min(ctx, max_ctx)
 
 
+def fam_context(fam, vram_mib, weights_mib, mtp_mib=0, mmproj_mib=0,
+                max_ctx=None):
+    """context_for with a family's own per-token and fixed costs."""
+    return context_for(vram_mib, weights_mib, fam["kv_bytes"],
+                       fam["state_mib"], mtp_mib, mmproj_mib,
+                       min(fam["max_ctx"], max_ctx or fam["max_ctx"]),
+                       fam["draft_kv_mib"])
+
+
 def _combos(family_id):
-    """Every (mtp_id, mmproj_id) worth trying for a family."""
-    if not MODELS[family_id]["mtp"]:
-        return [(None, None)]
-    return [
-        ("q8_0", "f16"), ("q8_0", "q8_0"), ("q8_0", None),
-        ("q4_0", "f16"), ("q4_0", "q8_0"), ("q4_0", None),
-        (None,   "f16"), (None,   "q8_0"), (None,   None),
-    ]
+    """Every (mtp_id, mmproj_id) worth trying for a family: each head
+    and each projector the family has, best first, and going without."""
+    fam = MODELS[family_id]
+    return [(m, p) for m in list(fam["mtp_heads"]) + [None]
+            for p in list(fam["mmproj"]) + [None]]
 
 
 # Preference among configurations that all clear the bar. Higher is
@@ -471,11 +525,9 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
         if quant and q != quant:
             continue
         for mtp_id, mmproj_id in _combos(family_id):
-            mtp_mib = mib(MTP_HEADS[mtp_id][1]) if mtp_id else 0
-            mm_mib = mib(MMPROJ[mmproj_id][2]) if mmproj_id else 0
-            ctx = context_for(vram_mib, mib(qbytes), fam["kv_bytes"],
-                              fam["recurrent_mib"], mtp_mib, mm_mib,
-                              fam["max_ctx"])
+            mtp_mib = mib(fam["mtp_heads"][mtp_id].bytes) if mtp_id else 0
+            mm_mib = mib(fam["mmproj"][mmproj_id].bytes) if mmproj_id else 0
+            ctx = fam_context(fam, vram_mib, mib(qbytes), mtp_mib, mm_mib)
             if ctx == 0:
                 continue
             plan = {
@@ -502,15 +554,17 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
     return None
 
 
-def recommend(vram_mib, allow_third_party=True, family=None, quant=None):
-    """What this machine should download and run."""
+def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
+              order=None):
+    """What this machine should download and run. `order` is the
+    families to choose from, best first; FAMILY_ORDER unless given."""
     if family:
         plan = plan_for(vram_mib, family, quant)
         if plan:
             plan["forced"] = True
         return plan
 
-    families = [f for f in FAMILY_ORDER
+    families = [f for f in (order or FAMILY_ORDER)
                 if allow_third_party or not MODELS[f].get("third_party")]
 
     # Best family first. Dropping a family is the largest sacrifice
@@ -595,11 +649,10 @@ def cmd_recommend(args):
         return 0
 
     fam = MODELS[plan["family"]]
-    mtp_file = MTP_HEADS[plan["mtp"]][0] if plan["mtp"] else ""
-    mm_file = MMPROJ[plan["mmproj"]][1] if plan["mmproj"] else ""
-    total = (plan["quant_bytes"]
-             + (MTP_HEADS[plan["mtp"]][1] if plan["mtp"] else 0)
-             + (MMPROJ[plan["mmproj"]][2] if plan["mmproj"] else 0))
+    none = Extra("", "", "", 0)
+    head = fam["mtp_heads"][plan["mtp"]] if plan["mtp"] else none
+    proj = fam["mmproj"][plan["mmproj"]] if plan["mmproj"] else none
+    total = plan["quant_bytes"] + head.bytes + proj.bytes
 
     rows += [
         ("REC_OK", 1),
@@ -612,12 +665,15 @@ def cmd_recommend(args):
         ("REC_QUANT", plan["quant"]),
         ("REC_QUANT_GB", "%.1f" % (plan["quant_bytes"] / 1e9)),
         ("REC_CTX", plan["ctx"]),
+        # _FILE is the name in the repo, _LOCAL the name in models/.
         ("REC_MTP", plan["mtp"] or ""),
-        ("REC_MTP_FILE", mtp_file),
-        ("REC_MTP_REPO", MTP_REPO if mtp_file else ""),
+        ("REC_MTP_FILE", head.remote),
+        ("REC_MTP_LOCAL", head.local),
+        ("REC_MTP_REPO", head.repo),
         ("REC_MMPROJ", plan["mmproj"] or ""),
-        ("REC_MMPROJ_FILE", mm_file),
-        ("REC_MMPROJ_REPO", MMPROJ[plan["mmproj"]][0] if mm_file else ""),
+        ("REC_MMPROJ_FILE", proj.remote),
+        ("REC_MMPROJ_LOCAL", proj.local),
+        ("REC_MMPROJ_REPO", proj.repo),
         ("REC_THIRD_PARTY", 1 if fam.get("third_party") else 0),
         ("REC_TOTAL_GB", "%.1f" % (total / 1e9)),
         ("REC_BELOW_MIN", 1 if plan.get("below_min") else 0),
@@ -652,8 +708,7 @@ def cmd_size_model(args):
     mtp_mib = mib(os.path.getsize(args.mtp)) if args.mtp and os.path.isfile(args.mtp) else 0
     mm_mib = mib(os.path.getsize(args.mmproj)) if args.mmproj and os.path.isfile(args.mmproj) else 0
 
-    ctx = context_for(vram, weights, fam["kv_bytes"], fam["recurrent_mib"],
-                      mtp_mib, mm_mib, min(fam["max_ctx"], args.max_ctx))
+    ctx = fam_context(fam, vram, weights, mtp_mib, mm_mib, args.max_ctx)
     tid, tlabel = tier_for(vram)
 
     rows = [
@@ -680,7 +735,9 @@ def cmd_size_model(args):
     best = plan_for(vram, fam_id) if vram else None
     if best:
         rows += [
-            ("REC_SAME", 1 if best["quant"] in base else 0),
+            # Exact, not a substring: Q6_K is inside UD-Q6_K_XL.
+            ("REC_SAME", 1 if base == "%s-%s.gguf" % (fam["prefix"],
+                                                       best["quant"]) else 0),
             ("REC_FAMILY", fam_id),
             ("REC_QUANT", best["quant"]),
             ("REC_CTX", best["ctx"]),
@@ -688,8 +745,12 @@ def cmd_size_model(args):
         ]
     elif vram:
         # Nothing in this family clears the bar on this card. That IS
-        # worth crossing families for, so point at the one that does.
-        alt = recommend(vram)
+        # worth crossing families for, so point at the one that does:
+        # a sibling that clears the bar, else whatever kiln would pick
+        # on its own.
+        alt = next((p for p in (plan_for(vram, f)
+                                for f in SIBLINGS.get(fam["group"], ()))
+                    if p), None) or recommend(vram)
         if alt and alt["family"] != fam_id:
             rows += [
                 ("REC_SAME", 0),
@@ -729,7 +790,53 @@ def cmd_variant(args):
         # Best quant first -- start.* uses this to pick among the
         # files actually on disk.
         ("V_QUANTS", " ".join(q for q, _ in fam["quants"])),
+        # The same, for the MTP head and the projector: local names
+        # in models/, best first.
+        ("V_MTP_FILES", " ".join(h.local for h in fam["mtp_heads"].values())),
+        ("V_MMPROJ_FILES", " ".join(p.local for p in fam["mmproj"].values())),
+        ("V_SPEC_N", fam["spec_n_max"]),
+        ("V_SAMPLING", fam["sampling"]),
+        ("V_REASONING", fam["reasoning"]),
+        ("V_MIN_BUILD", fam["min_build"]),
     ])
+    return 0
+
+
+def llama_build(exe):
+    """The build number of a llama-server binary, or 0 if it cannot be
+    read. Newer builds print "version: 0.4.0-dev (build 10901, commit
+    ...)", older ones "version: 9431 (94ca829b6)". Never match a bare
+    "build": the "built with Clang" line would answer -- see NOTES.md."""
+    # Not _run: --version prints to stderr, which that does not keep.
+    try:
+        proc = subprocess.run([exe, "--version"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True,
+                              errors="replace", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    out = proc.stdout + proc.stderr
+    m = re.search(r"\(build (\d+)", out) or re.search(r"version:\s*(\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
+def cmd_build(args):
+    emit([("BUILD", llama_build(args.build))])
+    return 0
+
+
+def on_disk(fam_id, models_dir=MODELS_DIR):
+    """The best quant of a family present in models_dir, or ""."""
+    fam = MODELS[fam_id]
+    return next((q for q, _ in fam["quants"]
+                 if os.path.isfile(os.path.join(
+                     models_dir, "%s-%s.gguf" % (fam["prefix"], q)))), "")
+
+
+def cmd_pick_on_disk(args):
+    """The family `kiln start` runs when none is named. Empty when
+    nothing is downloaded, so the caller names its own default."""
+    emit([("VARIANT", next((f for f in DISK_ORDER
+                            if on_disk(f, args.models_dir)), ""))])
     return 0
 
 
@@ -784,13 +891,14 @@ def cmd_table(args):
 
     for fam_id in FAMILY_ORDER:
         fam = MODELS[fam_id]
-        mtp = "q8_0" if fam["mtp"] else None
-        mm = "f16" if fam["vision"] else None
+        # The best head and projector: q8_0 and f16 in every family.
+        mtp = next(iter(fam["mtp_heads"].items()), None)
+        mm = next(iter(fam["mmproj"].items()), None)
         extra = []
-        if fam["mtp"]:
-            extra.append("MTP q8_0")
-        if fam["vision"]:
-            extra.append("vision f16")
+        if mtp:
+            extra.append("MTP %s" % mtp[0])
+        if mm:
+            extra.append("vision %s" % mm[0])
         note = (" (with %s)" % " + ".join(extra)) if extra else " (text-only)"
         print("\n**%s**%s\n" % (fam["label"], note))
         print("| Quant | " + " | ".join(c[1] for c in cards) + " |")
@@ -798,10 +906,9 @@ def cmd_table(args):
         for quant, qbytes in fam["quants"]:
             cells = []
             for vram, _ in cards:
-                ctx = context_for(
-                    vram, mib(qbytes), fam["kv_bytes"], fam["recurrent_mib"],
-                    mib(MTP_HEADS[mtp][1]) if mtp else 0,
-                    mib(MMPROJ[mm][2]) if mm else 0, fam["max_ctx"])
+                ctx = fam_context(fam, vram, mib(qbytes),
+                                  mib(mtp[1].bytes) if mtp else 0,
+                                  mib(mm[1].bytes) if mm else 0)
                 cells.append(fmt(ctx))
             print("| `%s` | %s |" % (quant, " | ".join(cells)))
 
@@ -852,6 +959,10 @@ def main():
                    help="emit V_* registry fields for one family")
     g.add_argument("--quants", metavar="ID",
                    help="per-quant sizes and contexts for one family")
+    g.add_argument("--pick-on-disk", action="store_true",
+                   help="the family kiln start runs when none is named")
+    g.add_argument("--build", metavar="EXE",
+                   help="the build number of a llama-server binary")
 
     p.add_argument("--vram", type=int, default=0,
                    help="override detected VRAM in MiB (for tables/testing)")
@@ -864,10 +975,16 @@ def main():
     p.add_argument("--mmproj", default="", help="mmproj path, for --size-model")
     p.add_argument("--max-ctx", type=int, default=262144)
     p.add_argument("--disk-path", default=".")
+    p.add_argument("--models-dir", default=MODELS_DIR,
+                   help="where to look, for --pick-on-disk")
     args = p.parse_args()
 
     if args.detect:
         return cmd_detect(args)
+    if args.pick_on_disk:
+        return cmd_pick_on_disk(args)
+    if args.build:
+        return cmd_build(args)
     if args.recommend:
         return cmd_recommend(args)
     if args.table:

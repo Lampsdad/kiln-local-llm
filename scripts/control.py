@@ -71,7 +71,7 @@ SLOW_TTL = 300
 
 # Families in the order start.bat and lib_variants.sh pick from when no
 # variant is named: stock before abliterated, big before small.
-START_ORDER = ("base", "ablit", "9b", "4b")
+START_ORDER = tuple(hardware.DISK_ORDER)
 
 KEEP_JOBS = 20
 
@@ -190,8 +190,8 @@ def slow_facts(plat):
     if plan:
         fam = hardware.MODELS[plan["family"]]
         total = (plan["quant_bytes"]
-                 + (hardware.MTP_HEADS[plan["mtp"]][1] if plan["mtp"] else 0)
-                 + (hardware.MMPROJ[plan["mmproj"]][2]
+                 + (fam["mtp_heads"][plan["mtp"]].bytes if plan["mtp"] else 0)
+                 + (fam["mmproj"][plan["mmproj"]].bytes
                     if plan["mmproj"] else 0))
         rec = {"family": plan["family"], "label": fam["label"],
                "quant": plan["quant"], "ctx": plan["ctx"],
@@ -241,11 +241,11 @@ def model_rows(vram, rec_family):
             # exact file is already there, as the download scripts do.
             extra = 0
             if plan["mtp"]:
-                f, size = hardware.MTP_HEADS[plan["mtp"]]
-                extra += 0 if _exists(f) else size
+                head = fam["mtp_heads"][plan["mtp"]]
+                extra += 0 if _exists(head.local) else head.bytes
             if plan["mmproj"]:
-                _, f, size = hardware.MMPROJ[plan["mmproj"]]
-                extra += 0 if _exists(f) else size
+                proj = fam["mmproj"][plan["mmproj"]]
+                extra += 0 if _exists(proj.local) else proj.bytes
             get = {"quant": plan["quant"], "ctx": plan["ctx"],
                    "gb": round((plan["quant_bytes"] + extra) / 1e9, 1)}
         rows.append({
@@ -261,9 +261,13 @@ def model_rows(vram, rec_family):
 
 
 def shared_files():
-    """The MTP head and projector on disk, whichever precision."""
-    mtp = next((f for f, _ in hardware.MTP_HEADS.values() if _exists(f)), "")
-    mm = next((f for _, f, _ in hardware.MMPROJ.values() if _exists(f)), "")
+    """An MTP head and a projector on disk, whichever family and
+    precision they are for."""
+    fams = list(hardware.MODELS.values())
+    mtp = next((h.local for f in fams for h in f["mtp_heads"].values()
+                if _exists(h.local)), "")
+    mm = next((p.local for f in fams for p in f["mmproj"].values()
+               if _exists(p.local)), "")
     return {"mtp": mtp, "vision": mm}
 
 
