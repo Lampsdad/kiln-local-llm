@@ -82,9 +82,10 @@ if exist "%CF_EXE%" (
 ) else (
     echo [*] Downloading cloudflared...
     mkdir "%CF_DIR%" 2>nul
+    set "KILN_PS_FILE=%CF_EXE%"
     powershell -NoProfile -Command ^
         "$ProgressPreference='SilentlyContinue';" ^
-        "Invoke-WebRequest 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '%CF_EXE%' -UseBasicParsing;" ^
+        "Invoke-WebRequest 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile $env:KILN_PS_FILE -UseBasicParsing;" ^
         "Write-Host 'cloudflared installed.'"
 
     if errorlevel 1 (

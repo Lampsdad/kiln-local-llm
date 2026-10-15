@@ -55,8 +55,9 @@ timeout /t 3 >nul
 :: ---- corpus ----
 if not exist "%CORPUS%" (
     echo Downloading wikitext-2 evaluation corpus...
+    set "KILN_PS_FILE=%TEMP%\wikitext2.zip"
     powershell -NoProfile -Command ^
-        "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip' -OutFile '%TEMP%\wikitext2.zip'; Expand-Archive -LiteralPath '%TEMP%\wikitext2.zip' -DestinationPath 'models' -Force"
+        "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip' -OutFile $env:KILN_PS_FILE; Expand-Archive -LiteralPath $env:KILN_PS_FILE -DestinationPath 'models' -Force"
     if not exist "%CORPUS%" (
         echo  ERROR: could not obtain the corpus. Place a plain-text file at:
         echo    %CORPUS%

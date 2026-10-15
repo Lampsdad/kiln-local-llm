@@ -21,6 +21,9 @@ set "API_KEY_FILE=%~dp0..\..\api_key.txt"
 if exist "%API_KEY_FILE%" goto :have_key
 
 echo Generating an API key for this server ^(api_key.txt^)...
+:: The path goes in through the environment: a ' in the folder name
+:: would end the PowerShell string, and -Path reads [ ] as wildcards.
+set "KILN_PS_FILE=%API_KEY_FILE%"
 :: 24 CSPRNG bytes as hex. Guid.NewGuid would also do, but naming
 :: the crypto RNG states the intent: this is a credential on a
 :: public URL, not an identifier.
@@ -31,7 +34,7 @@ echo Generating an API key for this server ^(api_key.txt^)...
 :: then terminate it early -- which fails as a stray redirect
 :: ("The system cannot find the drive specified") while still
 :: appearing to work.
-powershell -NoProfile -Command "$b = New-Object byte[] 24; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join '' | Set-Content -Path '%API_KEY_FILE%' -Encoding ascii -NoNewline"
+powershell -NoProfile -Command "$b = New-Object byte[] 24; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join '' | Set-Content -LiteralPath $env:KILN_PS_FILE -Encoding ascii -NoNewline"
 
 :have_key
 :: The Unix twin does chmod 600; this is the Windows equivalent.
