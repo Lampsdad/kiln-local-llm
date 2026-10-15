@@ -70,6 +70,11 @@ jobs:
       - name: benchmark
         run: python3 .github/scripts/test_bench.py
 
+      # kiln path writes into ~/.local/bin; these pin that it never
+      # replaces or deletes a kiln some other tool put there.
+      - name: kiln path
+        run: python3 .github/scripts/test_path.py
+
   tui:
     name: kiln tui
     runs-on: ubuntu-latest

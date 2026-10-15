@@ -19,6 +19,7 @@ call "%~dp0lib_ui.bat"
 ::    kiln self-update     update kiln itself from GitHub
 ::    kiln tui             full-screen app, with a benchmark
 ::    kiln bench | clean | help
+::    kiln path [--remove] put kiln on PATH, for any folder
 ::
 ::  Everything here delegates to the existing scripts, and none
 ::  of them changed to accommodate it -- any of them can still be
@@ -50,6 +51,7 @@ if /I "%CMD%"=="self-update" goto :cmd_self_update
 if /I "%CMD%"=="tui"      goto :cmd_tui
 if /I "%CMD%"=="bench"    goto :cmd_bench
 if /I "%CMD%"=="clean"    goto :cmd_clean
+if /I "%CMD%"=="path"     goto :cmd_path
 if /I "%CMD%"=="help"     goto :cmd_help
 if /I "%CMD%"=="-h"       goto :cmd_help
 if /I "%CMD%"=="--help"   goto :cmd_help
@@ -592,6 +594,18 @@ exit /b %errorlevel%
 call "%~dp0cleanup.bat"
 exit /b %errorlevel%
 
+:: A kiln.cmd shim in the user's .local\bin, and that folder on the
+:: user PATH. kiln setup runs this too.
+:cmd_path
+set "PATH_FLAG="
+if /I "%ARG%"=="--remove" set "PATH_FLAG=-Remove"
+if defined ARG if not defined PATH_FLAG (
+    echo  %C_ERR%Usage:%C_0% kiln path [--remove]
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_path.ps1" %PATH_FLAG%
+exit /b %errorlevel%
+
 :step
 echo.
 echo  %C_AC%::%C_0%  %C_HL%%~1%C_0%
@@ -623,6 +637,8 @@ echo   %C_AC%tui%C_0%                     full-screen app, with an interactive b
 echo                           ^(the default: kiln with no command does this^)
 echo   %C_AC%bench%C_0%                   quant speed and throughput sweep
 echo   %C_AC%clean%C_0%                   reclaim disk from superseded GGUFs
+echo   %C_AC%path%C_0%  [--remove]        put kiln on PATH, so it runs from any folder
+echo                           ^(setup does this; %C_AC%--remove%C_0% undoes it^)
 echo.
 echo  %C_HL%Variants:%C_0%
 echo   %C_AC%base ablit 9b 4b%C_0%        Qwen3.8: 27B, 27B abliterated, 9B and 4B

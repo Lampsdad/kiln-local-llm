@@ -19,8 +19,9 @@ kiln
 
 One command. Bare `kiln` opens the full-screen TUI. `kiln status`
 prints what is installed, downloaded and running. macOS and Linux use
-the same front door: `./kiln.sh` (same verbs). Setup links `kiln` into
-`~/.local/bin`.
+the same front door: `./kiln.sh` (same verbs). Setup puts `kiln` on
+your PATH through `~/.local/bin`, on Windows too, so it runs from any
+folder.
 
 **Contents** — [Why not Ollama?](#why-not-just-use-ollama-or-lm-studio) ·
 [Will this run on my GPU?](#will-this-run-on-my-gpu) ·
@@ -235,7 +236,14 @@ kiln bench        :: quant speed and throughput sweep
 kiln clean        :: reclaim disk from superseded GGUFs
 kiln self-update  :: update kiln itself to the newest release
 kiln tui          :: all of the above as a full-screen app
+kiln path         :: put kiln on PATH, so it runs from any folder
 ```
+
+`kiln setup` puts `kiln` on your PATH. It writes a small `kiln.cmd`
+into `%USERPROFILE%\.local\bin` and adds that folder to your user PATH,
+with no admin rights. Open a new terminal and `kiln` works from any
+folder. `kiln path` does only that step, and `kiln path --remove` undoes
+it.
 
 ### macOS and Linux
 
@@ -247,9 +255,11 @@ cd kiln-local-llm
 
 Bare `./kiln.sh` opens the TUI. `./kiln.sh status` prints the status
 board. `./kiln.sh setup` links `kiln` into `~/.local/bin` (no sudo), so
-the same commands then work from any directory as `kiln`. Same verbs,
-same order. `kiln.sh` detects macOS, Debian/Ubuntu or Fedora/RHEL and
-calls the right platform script for you:
+the same commands then work from any directory as `kiln`. If that
+folder is not on your PATH yet, setup prints the line that adds it.
+`./kiln.sh path` does only the linking, and `--remove` undoes it.
+Same verbs, same order. `kiln.sh` detects macOS, Debian/Ubuntu or
+Fedora/RHEL and calls the right platform script for you:
 
 ```bash
 ./kiln.sh status          # print the status board
@@ -771,6 +781,7 @@ NOTES.md               why the tuned constants are what they are
 | `lib_variants.bat` | Resolves a build to its repo, filename prefix, Cursor alias, MTP head, projector and launch flags. Reads the registry from `hardware.py`. |
 | `lib_api_key.bat` | Generates the API key, locks the file to your account, hands back `API_KEY`. |
 | `lib_ui.bat` | ANSI palette for the CLI. Degrades to empty strings under `NO_COLOR`. |
+| `kiln_path.ps1` | Puts `kiln` on PATH: a `kiln.cmd` shim in `%USERPROFILE%\.local\bin`, and that folder on the user PATH. Behind `kiln path` and `kiln setup`. |
 
 **Shared** (`scripts/`)
 
@@ -788,6 +799,7 @@ NOTES.md               why the tuned constants are what they are
 | Script | Purpose |
 |---|---|
 | `install_mac.sh` / `install_linux.sh` / `install_fedora.sh` | One-time setup, per platform. |
+| `kiln_path.sh` | Links `~/.local/bin/kiln` to this checkout's `kiln.sh`. Behind `kiln path` and the setup scripts. |
 | `download.sh` | Weights + MTP head + vision projector. `QUANT=` and `VARIANT=` override. |
 | `start_mac.sh` / `start_linux.sh` / `start_fedora.sh` | Tuned launchers. Context comes from `hardware.py`, falling back to `--fit on`. |
 | `slurm-llama.sh` | Run the server as a Slurm job so the GPU shows as allocated. |

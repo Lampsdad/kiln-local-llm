@@ -48,6 +48,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of hanging. Unix setup links `kiln` to `~/.local/bin/kiln` without
   sudo. That link resolves back to the checkout, so the command works
   from any directory.
+- **`kiln` on PATH on Windows too.** `kiln setup` writes a `kiln.cmd`
+  shim into `%USERPROFILE%\.local\bin` and adds that folder to the user
+  PATH, so `kiln` runs from any folder in a new terminal. No admin
+  rights are needed. The rest of the user PATH is kept as it was:
+  `%USERPROFILE%`-style entries stay unexpanded. `kiln path` does only
+  this step on every platform, and `kiln path --remove` undoes it. It
+  never replaces or deletes a `kiln` that some other tool put there.
+  On macOS and Linux, setup now says how to put `~/.local/bin` on PATH
+  when it is missing, which it always is on macOS.
 
 ### Fixed
 
