@@ -839,5 +839,10 @@ class Control:
             if job.running and job.action != "start":
                 job.cancel()
                 gone.append(job.title)
-        remove_logs()
+        # Nothing reads a job's log once the front end has gone, and a
+        # start job's log holds the key. On Unix a server still running
+        # writes on into the deleted file; on Windows it holds the file
+        # open, so the next kiln tui sweeps it up.
+        remove_logs([job.log_path for job in self.jobs.values()
+                     if job.log_path])
         return gone

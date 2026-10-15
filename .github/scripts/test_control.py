@@ -427,6 +427,17 @@ class Serialising(unittest.TestCase):
         self.assertEqual(len(gone), 1)
         self.assertFalse(start.cancelled)
 
+    def test_shutdown_takes_every_log_with_it(self):
+        # A start job keeps running, and its log holds the API key.
+        start = self.ctl.spawn("start", "s", ["start", "base"])
+        other = self.ctl.spawn("opencode", "o", ["opencode"])
+        self.ctl.shutdown()
+        self.assertTrue(start.running)
+        if not control.WINDOWS:
+            self.assertFalse(os.path.exists(start.log_path))
+        other.wait(20)
+        self.assertFalse(os.path.exists(other.log_path))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
