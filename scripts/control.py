@@ -106,8 +106,8 @@ def start_script(plat):
 
 def server_port(plat):
     """The port this platform's start script serves on. Read from the
-    script rather than restated here, because they do not all agree:
-    start_linux.sh uses 8081 and the rest use 8080."""
+    script rather than restated here, so the two cannot drift apart.
+    Every start script uses 8080."""
     try:
         with open(start_script(plat), encoding="utf-8",
                   errors="replace") as fh:
@@ -449,6 +449,7 @@ def build_args(req):
         "stop": ["stop"],
         "key-rotate": ["key", "rotate"],
         "opencode": ["opencode"],
+        "pi": ["pi"],
         "self-update": ["self-update"],
         "self-update-check": ["self-update", "--check"],
     }
@@ -481,6 +482,7 @@ TITLES = {
     "stop": "Stop the server",
     "key-rotate": "Rotate the API key",
     "opencode": "Set up OpenCode",
+    "pi": "Set up pi",
     "self-update": "Update kiln",
     "self-update-check": "Check for a kiln update",
 }

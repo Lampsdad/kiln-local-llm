@@ -56,6 +56,11 @@ jobs:
       - name: kiln opencode
         run: python3 .github/scripts/test_opencode.py
 
+      # kiln pi edits pi's models.json, which pi rejects whole when any
+      # part breaks its schema; these check every write against it.
+      - name: kiln pi
+        run: python3 .github/scripts/test_pi.py
+
       # kiln self-update rewrites the user's checkout; these pin that it
       # refuses rather than discard a local edit or a local commit.
       - name: kiln self-update

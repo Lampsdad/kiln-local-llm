@@ -16,6 +16,7 @@ call "%~dp0lib_ui.bat"
 ::    kiln hardware        what this machine can run
 ::    kiln update          upgrade llama.cpp
 ::    kiln opencode        list the local models in OpenCode
+::    kiln pi              list the local models in pi
 ::    kiln self-update     update kiln itself from GitHub
 ::    kiln tui             full-screen app, with a benchmark
 ::    kiln bench | clean | help
@@ -47,6 +48,7 @@ if /I "%CMD%"=="update"   goto :cmd_update
 if /I "%CMD%"=="hardware" goto :cmd_hardware
 if /I "%CMD%"=="hw"       goto :cmd_hardware
 if /I "%CMD%"=="opencode" goto :cmd_opencode
+if /I "%CMD%"=="pi"       goto :cmd_pi
 if /I "%CMD%"=="self-update" goto :cmd_self_update
 if /I "%CMD%"=="tui"      goto :cmd_tui
 if /I "%CMD%"=="bench"    goto :cmd_bench
@@ -556,6 +558,21 @@ if errorlevel 1 exit /b 1
 %PY_EXE% "%~dp0..\opencode.py" %2 %3 %4 %5
 exit /b %errorlevel%
 
+:cmd_pi
+call :find_python
+if not defined PY_EXE (
+    echo  %C_ERR%Python not found.%C_0% kiln needs it to write pi's models.json.
+    echo  Install Python 3.8+ from https://python.org
+    exit /b 1
+)
+:: pi reads api_key.txt on its first request to the server, so make
+:: sure there is one to read.
+call "%~dp0lib_api_key.bat"
+if errorlevel 1 exit /b 1
+:: Raw positional args, as in :cmd_opencode above.
+%PY_EXE% "%~dp0..\pi_agent.py" %2 %3 %4 %5
+exit /b %errorlevel%
+
 :cmd_self_update
 call :find_python
 if not defined PY_EXE (
@@ -630,6 +647,8 @@ echo   %C_AC%hardware%C_0%                what this GPU can run, and at what con
 echo   %C_AC%opencode%C_0%                list the local models in OpenCode on this machine
 echo                           %C_AC%--print%C_0% to preview, %C_AC%--remove%C_0% to undo,
 echo                           %C_AC%--url URL%C_0% to pin the server address
+echo   %C_AC%pi%C_0%                      list the local models in pi on this machine
+echo                           ^(the same %C_AC%--print%C_0%, %C_AC%--remove%C_0% and %C_AC%--url%C_0%^)
 echo   %C_AC%self-update%C_0%             update kiln itself to the newest release
 echo                           %C_AC%--main%C_0% to follow every change on main,
 echo                           %C_AC%--check%C_0% to only report what is available

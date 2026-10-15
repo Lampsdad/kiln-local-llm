@@ -58,6 +58,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -231,8 +232,9 @@ def occupied(base):
     return _get(base + "/models", "")[0] != 0
 
 
-def choose_url(env, key, notes):
-    """(base URL, live server info or None)."""
+def choose_url(env, key, notes, client="OpenCode"):
+    """(base URL, live server info or None). client names the program
+    being configured, for the notes."""
     local = "http://127.0.0.1:%d/v1" % PORT
     by_name = "http://%s:%d/v1" % (socket.gethostname(), PORT)
     candidates = [local]
@@ -254,9 +256,9 @@ def choose_url(env, key, notes):
         if info is None:
             continue
         if env == "wsl" and url != local:
-            notes.append(_nat_warning(host))
+            notes.append(_nat_warning(host, client))
         if env == "windows" and url != local:
-            notes.append(_shadowed_warning())
+            notes.append(_shadowed_warning(client))
         return url, info
 
     # Nothing running. Configure for where it WILL run.
@@ -264,29 +266,29 @@ def choose_url(env, key, notes):
         notes.append("No server is running. This checkout holds the Windows"
                      " build of llama.cpp, so the URL assumes `kiln start`"
                      " on Windows.")
-        notes.append(_nat_warning(host))
+        notes.append(_nat_warning(host, client))
         return "http://%s:%d/v1" % (host, PORT), None
     if env == "windows" and occupied(local):
-        notes.append(_shadowed_warning())
+        notes.append(_shadowed_warning(client))
         return by_name, None
     return local, None
 
 
-def _nat_warning(host):
-    return ("WSL is in NAT mode, so OpenCode reaches Windows at %s. That"
+def _nat_warning(host, client):
+    return ("WSL is in NAT mode, so %s reaches Windows at %s. That"
             " address changes whenever WSL restarts, and Windows Firewall"
             " may block it. Either re-run this after a restart, or set"
             " networkingMode=mirrored under [wsl2] in %%USERPROFILE%%"
             "\\.wslconfig, run `wsl --shutdown`, and re-run this to switch"
-            " to 127.0.0.1." % host)
+            " to 127.0.0.1." % (client, host))
 
 
-def _shadowed_warning():
+def _shadowed_warning(client):
     return ("127.0.0.1:%d is answered by another program, not llama-server"
-            " -- usually a WSL or Docker port forward -- so OpenCode uses"
+            " -- usually a WSL or Docker port forward -- so %s uses"
             " this machine's name instead. The Cloudflare tunnel forwards to"
             " localhost:%d and reaches that other program too; move it off"
-            " port %d for the tunnel to work." % (PORT, PORT, PORT))
+            " port %d for the tunnel to work." % (PORT, client, PORT, PORT))
 
 
 # ---------------------------------------------------------------
@@ -331,6 +333,12 @@ def planned_ctx(fam_id, files, vram):
     return hardware.fam_context(fam, vram, on_gpu, size(mtp), size(mm))
 
 
+def output_budget(ctx):
+    """Tokens a reply may use: Qwen's budget, but never so much of the
+    window that a long prompt has no room left."""
+    return min(MAX_OUTPUT, ctx // 4)
+
+
 def model_entry(name, ctx, vision):
     return {
         "name": name,
@@ -342,13 +350,15 @@ def model_entry(name, ctx, vision):
             "input": ["text", "image"] if vision else ["text"],
             "output": ["text"],
         },
-        "limit": {"context": ctx, "output": min(MAX_OUTPUT, ctx // 4)},
+        "limit": {"context": ctx, "output": output_budget(ctx)},
     }
 
 
-def build_models(live, notes):
+def local_models(live, notes):
+    """What to list, for any client: dicts of alias, name, ctx and
+    vision, one per downloaded build, plus whatever is serving."""
     vram = hardware.detect_gpu()[0]
-    models = {}
+    models = []
     guessed = False
 
     fams = [f for f in hardware.MODELS if on_disk(f)]
@@ -370,8 +380,8 @@ def build_models(live, notes):
         vision = bool(files and files[2])
         if live_alias == fam["alias"] and live.get("ctx"):
             # The running window can be larger than the planned one
-            # (start --no-mtp), and OpenCode keeps whichever is written
-            # here across restarts -- so take the smaller.
+            # (start --no-mtp), and the client keeps whichever is
+            # written here across restarts -- so take the smaller.
             ctx = min(ctx, live["ctx"]) if ctx else live["ctx"]
             vision = vision or live.get("vision", False)
         if not ctx:
@@ -380,18 +390,26 @@ def build_models(live, notes):
         name = fam["label"] + " (local)"
         if fam.get("third_party"):
             name = fam["label"] + " (local, third-party)"
-        models[fam["alias"]] = model_entry(name, ctx, vision)
+        models.append({"alias": fam["alias"], "name": name, "ctx": ctx,
+                       "vision": vision})
 
     # Someone serving an alias the registry does not know.
-    if live_alias and live_alias not in models and live.get("ctx"):
-        models[live_alias] = model_entry(live_alias + " (local)",
-                                         live["ctx"], live.get("vision", False))
+    if (live_alias and live.get("ctx")
+            and live_alias not in [m["alias"] for m in models]):
+        models.append({"alias": live_alias, "name": live_alias + " (local)",
+                       "ctx": live["ctx"],
+                       "vision": live.get("vision", False)})
 
     if guessed:
         notes.append("Could not read the GPU, so context is set to %dK. Start"
                      " the server and re-run this to use the real window."
                      % (FALLBACK_CTX // 1024))
     return models
+
+
+def build_models(live, notes):
+    return {m["alias"]: model_entry(m["name"], m["ctx"], m["vision"])
+            for m in local_models(live, notes)}
 
 
 def key_reference():
@@ -517,8 +535,40 @@ def load_config(path):
     return doc, raw
 
 
-def save_config(path, doc, raw):
-    """Write doc to path, atomically. Returns the backup made, if any."""
+def _makedirs(d, mode):
+    """os.makedirs, with mode on every directory it creates rather than
+    only the last one."""
+    missing = []
+    while not os.path.isdir(d):
+        missing.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for p in reversed(missing):
+        try:
+            os.mkdir(p, mode)
+        except FileExistsError:
+            pass
+
+
+def _create(path, mode, newline):
+    """Open path for writing, created with mode from the start."""
+    if os.path.exists(path):
+        os.remove(path)
+    # O_BINARY: without it Windows turns every \n into \r\n below the
+    # newline= that open() is given.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, mode)
+    return open(fd, "w", encoding="utf-8", newline=newline)
+
+
+def save_config(path, doc, raw, private=False):
+    """Write doc to path, atomically. Returns the backup made, if any.
+
+    private creates missing directories 0700 and a new file 0600, as pi
+    does for its agent directory. OpenCode's are left to the umask.
+    """
     text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
     if raw is not None and text == raw:
         return None
@@ -526,18 +576,26 @@ def save_config(path, doc, raw):
     real = os.path.realpath(path)
     d = os.path.dirname(real)
     try:
-        os.makedirs(d, exist_ok=True)
+        # The backup and the temporary file start with the file's own
+        # mode: a config locked to its owner can hold other providers'
+        # keys, and must not sit in a readable copy even briefly. On
+        # Windows the only mode bit is read-only.
+        if raw is not None and os.name != "nt":
+            mode = stat.S_IMODE(os.stat(real).st_mode)
+        else:
+            mode = 0o600 if private else 0o666
+        _makedirs(d, 0o700 if private else 0o777)
         backup = None
         # Comments do not survive a JSON round-trip. The backup keeps the
         # file as it was before kiln first touched it, so later runs must
         # not overwrite it with kiln's own output.
         if raw is not None and not os.path.exists(real + ".kiln.bak"):
             backup = real + ".kiln.bak"
-            with open(backup, "w", encoding="utf-8", newline="") as fh:
+            with _create(backup, mode, "") as fh:
                 fh.write(raw)
         tmp = real + ".kiln.tmp"
         try:
-            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            with _create(tmp, mode, "\n") as fh:
                 fh.write(text)
             # On Windows the only mode bit is read-only, which would make
             # the replace below fail rather than preserve anything.

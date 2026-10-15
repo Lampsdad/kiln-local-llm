@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`kiln pi`** (`./kiln.sh pi`) lists the local models in
+  [pi](https://pi.dev), the terminal coding agent. It adds a `kiln`
+  provider to pi's `models.json` and takes the same `--print`,
+  `--remove` and `--url` as `kiln opencode`. pi's built-in llama.cpp
+  provider needs llama-server's router mode, so it lists nothing for a
+  server `kiln start` runs. The key is read from `api_key.txt` by a
+  command rather than copied. `p` in `kiln tui` runs it.
 - **Cursor follows the quick tunnel.** `scripts/unix/cursor_tunnel.sh`
   starts cloudflared and writes the new `*.trycloudflare.com` host into
   Cursor's OpenAI base URL, with the API-key workaround on. Stopping
@@ -68,6 +75,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the server looks for them beside the binary. No NVIDIA card still
   falls through to Vulkan, then CPU. The WSL/Linux installer keeps
   Vulkan and uses the same bNNNN tag lookup.
+- **Linux and WSL serve on port 8080 again.** `start_linux.sh` had
+  moved to 8081, while `kiln opencode`, the Cursor tunnel and the docs
+  all use 8080, so on Linux and WSL they pointed at nothing. The Slurm
+  job keeps 8081.
+- **Config backups keep the file's permissions.** The `.kiln.bak` that
+  `kiln opencode` and `kiln pi` make, and the temporary file each write
+  goes through, start with the mode of the file they copy, so a config
+  readable only by you never sits in a readable copy.
 - **`./kiln.sh get` on Fedora and Debian.** A plain `pip install` into
   the system Python is refused there. The download uses `huggingface_hub`
   when it is already installed, and otherwise installs it for the user.
