@@ -29,6 +29,10 @@ import control  # noqa: E402
 
 
 @unittest.skipIf(sys.platform == "win32", "lib_tunnel.sh is the Unix half")
+@unittest.skipIf(sys.platform == "darwin",
+                 "macOS ps -o comm names a script's interpreter, not the script, "
+                 "so a shell-script stand-in for cloudflared is never recognised; "
+                 "a real cloudflared is a binary there")
 class OnlyOurs(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

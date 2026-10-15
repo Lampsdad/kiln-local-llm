@@ -91,6 +91,25 @@ jobs:
           command -v bash
           bash --version | head -1
 
+      # TEMPORARY, to be removed: shows what macOS ps reports for a script
+      # named cloudflared, and whether pgrep finds it, before test_tunnel
+      # is decided on macOS.
+      - name: TEMPORARY probe of ps and pgrep on a script named cloudflared
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          d=$(mktemp -d)
+          printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$d/cloudflared"
+          chmod 755 "$d/cloudflared"
+          "$d/cloudflared" tunnel --url http://127.0.0.1:55555 &
+          pid=$!
+          sleep 1
+          echo "our pid: $pid"
+          echo "pgrep matches: $(pgrep -f -- 'tunnel .*--url http://(localhost|127\.0\.0\.1):55555( |$)' | tr '\n' ' ')"
+          echo "ps comm: [$(ps -o comm= -p $pid)]"
+          echo "ps args: [$(ps -o args= -p $pid)]"
+          kill $pid
+
       # Textual is what kiln tui runs on. It is installed at the version
       # tui.py asks for, so the TUI tests exercise the real app. Not on
       # 3.8: tui.py refuses anything older than 3.9.
@@ -121,8 +140,10 @@ jobs:
       # a Windows user does, through the root kiln.bat. The runner has no GPU,
       # llama.cpp or cloudflared, so status must say so and still exit 0.
       # stdin is NUL so nothing waits for a key; the step timeout catches a hang.
+      # always() keeps them running when the test step above has failed, so
+      # the front door is checked on every run.
       - name: kiln.bat help exits 0
-        if: runner.os == 'Windows'
+        if: always() && runner.os == 'Windows'
         shell: cmd
         timeout-minutes: 5
         run: |
@@ -130,7 +151,7 @@ jobs:
           if errorlevel 1 exit /b 1
 
       - name: kiln.bat status runs with no GPU
-        if: runner.os == 'Windows'
+        if: always() && runner.os == 'Windows'
         shell: cmd
         timeout-minutes: 5
         run: |
