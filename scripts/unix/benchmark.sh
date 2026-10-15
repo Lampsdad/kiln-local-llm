@@ -29,7 +29,9 @@ if [ ! -x "$BENCH" ]; then
 fi
 
 echo "Stopping any running llama-server to free VRAM/unified memory..."
-pkill -x llama-server 2>/dev/null || true
+# kiln's own server, on the port the start scripts use.
+. ./scripts/unix/lib_server.sh
+kiln_stop_server 8080 || true
 sleep 3
 
 # ---- find the primary model, best first ----
