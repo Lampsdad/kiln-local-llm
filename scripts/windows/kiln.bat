@@ -543,6 +543,7 @@ if "%K%"=="REC_MMPROJ"     echo   %C_MU%vision     %C_0% %V%
 if "%K%"=="REC_TOTAL_GB"   echo   %C_MU%download   %C_0% ~%V% GB
 if "%K%"=="REC_THIRD_PARTY" if "%V%"=="1" echo   %C_WARN%note       %C_0% third-party distill, not a Qwen release
 if "%K%"=="REC_BELOW_MIN"  if "%V%"=="1" echo   %C_WARN%note       %C_0% below the context kiln aims for; it will still load
+if "%K%"=="REC_BELOW_QUALITY" if "%V%"=="1" echo   %C_WARN%note       %C_0% a low-bit quant, below the quality floor; expect weaker output
 if "%K%"=="REC_REASON"     echo   %C_ERR%no fit     %C_0% %V%
 exit /b 0
 
