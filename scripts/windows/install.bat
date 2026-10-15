@@ -90,6 +90,15 @@ if not exist "models\" mkdir models
 echo [OK] models\ directory ready.
 
 :: ------------------------------------------------------------
+::  kiln on PATH
+::  A kiln.cmd shim in the user's .local\bin, the folder the macOS
+::  and Linux installers link kiln into, and that folder on the user
+::  PATH. Not fatal: kiln still runs from this folder without it.
+:: ------------------------------------------------------------
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_path.ps1"
+if errorlevel 1 echo [WARN] kiln is not on PATH. kiln path tries again.
+
+:: ------------------------------------------------------------
 ::  GPU check
 :: ------------------------------------------------------------
 echo.

@@ -14,6 +14,7 @@
 #    ./kiln.sh self-update    update kiln itself from GitHub
 #    ./kiln.sh tui            full-screen app, with a benchmark
 #    ./kiln.sh bench | quality | clean | help
+#    ./kiln.sh path [--remove] put kiln on PATH (~/.local/bin)
 #
 #  Bare `kiln` opens the TUI. `kiln status` prints the board.
 #  This dispatches to the per-platform scripts in scripts/unix/.
@@ -244,6 +245,8 @@ usage() {
    bench             speed benchmarks
    quality           KL-divergence of each quant vs Q8_0
    clean             reclaim space from superseded GGUFs
+   path [--remove]   put kiln on PATH, so it runs from any directory
+                     (setup does this; --remove undoes it)
    help              this text
 
  With no command, kiln opens the TUI.
@@ -388,6 +391,7 @@ case "$CMD" in
     bench)    exec "$UNIX/benchmark.sh" ;;
     quality)  exec "$UNIX/quality.sh" ;;
     clean)    exec "$UNIX/cleanup.sh" ;;
+    path)     shift; exec "$UNIX/kiln_path.sh" "$@" ;;
     help|-h|--help) usage ;;
     *)  echo "kiln: unknown command '$CMD'" >&2; usage; exit 1 ;;
 esac
