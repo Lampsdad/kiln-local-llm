@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`kiln pi`** (`./kiln.sh pi`) lists the local models in
+  [pi](https://pi.dev), the terminal coding agent. It adds a `kiln`
+  provider to pi's `models.json` and takes the same `--print`,
+  `--remove` and `--url` as `kiln opencode`. pi's built-in llama.cpp
+  provider needs llama-server's router mode, so it lists nothing for a
+  server `kiln start` runs. The key is read from `api_key.txt` by a
+  command rather than copied. `p` in `kiln tui` runs it.
 - **Cursor follows the quick tunnel.** `scripts/unix/cursor_tunnel.sh`
   starts cloudflared and writes the new `*.trycloudflare.com` host into
   Cursor's OpenAI base URL, with the API-key workaround on. Stopping
@@ -60,6 +67,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Linux and WSL setup give an NVIDIA card the CUDA build.** Newer
+  `nvidia-smi` prints `CUDA UMD Version: 13.4` where it printed `CUDA
+  Version: 13.4`, so setup read no CUDA version and fell back to Vulkan
+  on every NVIDIA card. `./kiln.sh setup` on Ubuntu and WSL also asked
+  for Vulkan outright. Under WSL that build sees no GPU and runs the
+  model on the CPU, while CUDA passes straight through: on a 5090 the
+  WSL CUDA build matched the Windows one. Setup now takes the CUDA
+  build when there is an NVIDIA driver, and Vulkan, then CPU, otherwise.
+  An existing `llama-bin/` is kept, so move it aside and re-run setup
+  to switch.
 - **Fedora setup no longer downloads a Vulkan build from `/releases/latest`.**
   That URL is the empty v0.x line, so `./kiln.sh setup` on Fedora found
   nothing. An NVIDIA card now gets the Ubuntu CUDA build whose toolkit
@@ -68,6 +85,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the server looks for them beside the binary. No NVIDIA card still
   falls through to Vulkan, then CPU. The WSL/Linux installer keeps
   Vulkan and uses the same bNNNN tag lookup.
+- **Linux and WSL serve on port 8080 again.** `start_linux.sh` had
+  moved to 8081, while `kiln opencode`, the Cursor tunnel and the docs
+  all use 8080, so on Linux and WSL they pointed at nothing. The Slurm
+  job keeps 8081.
+- **Config backups keep the file's permissions.** The `.kiln.bak` that
+  `kiln opencode` and `kiln pi` make, and the temporary file each write
+  goes through, start with the mode of the file they copy, so a config
+  readable only by you never sits in a readable copy.
+- **`kiln stop` stops only kiln's tunnel.** It, the macOS and Fedora
+  start scripts and the Slurm job ran `pkill -x cloudflared`, and on
+  Windows `kiln stop` and `kiln start` ran `taskkill /IM cloudflared.exe`.
+  That stopped every cloudflared on the machine: a named tunnel, a
+  tunnel run as a Windows service, or T3 Code's remote access. kiln now
+  stops only the quick tunnel to its own port, matched by its command
+  line, through `scripts/unix/lib_tunnel.sh` and
+  `scripts/windows/kiln_tunnel.ps1`. `kiln tui` uses the same rule
+  before it shows a tunnel URL, so another program's tunnel no longer
+  makes an old URL look live.
 - **`./kiln.sh get` on Fedora and Debian.** A plain `pip install` into
   the system Python is refused there. The download uses `huggingface_hub`
   when it is already installed, and otherwise installs it for the user.

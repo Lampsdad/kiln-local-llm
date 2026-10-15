@@ -106,8 +106,8 @@ def start_script(plat):
 
 def server_port(plat):
     """The port this platform's start script serves on. Read from the
-    script rather than restated here, because they do not all agree:
-    start_linux.sh uses 8081 and the rest use 8080."""
+    script rather than restated here, so the two cannot drift apart.
+    Every start script uses 8080."""
     try:
         with open(start_script(plat), encoding="utf-8",
                   errors="replace") as fh:
@@ -272,16 +272,40 @@ def shared_files():
     return {"mtp": mtp, "vision": mm}
 
 
-def processes(plat):
-    """(llama-server running, cloudflared running)."""
+# kiln's own quick tunnel is the cloudflared forwarding to its port.
+# Any other -- a named tunnel, T3 Code's remote access -- is not ours,
+# and must not make a stale log's URL look live. The same rule as
+# scripts/unix/lib_tunnel.sh and scripts/windows/kiln_tunnel.ps1.
+TUNNEL_ARGS = r"tunnel .*--url http://(localhost|127\.0\.0\.1):%d( |$)"
+
+
+def processes(plat, port):
+    """(llama-server running, kiln's tunnel running)."""
     if plat == "windows":
         out = _output(_run(["tasklist", "/NH", "/FO", "CSV"])).lower()
-        return '"llama-server.exe"' in out, '"cloudflared.exe"' in out
+        # The command line needs PowerShell, so only ask when some
+        # cloudflared.exe is running at all.
+        tunnel = False
+        if '"cloudflared.exe"' in out:
+            proc = _run(["powershell", "-NoProfile", "-ExecutionPolicy",
+                         "Bypass", "-File",
+                         os.path.join(HERE, "windows", "kiln_tunnel.ps1"),
+                         "-Port", str(port)])
+            tunnel = proc is not None and proc.returncode == 0
+        return '"llama-server.exe"' in out, tunnel
 
-    def up(name):
-        proc = _run(["pgrep", "-x", name])
-        return proc is not None and proc.returncode == 0
-    return up("llama-server"), up("cloudflared")
+    proc = _run(["pgrep", "-x", "llama-server"])
+    llama = proc is not None and proc.returncode == 0
+    tunnel = False
+    proc = _run(["pgrep", "-f", TUNNEL_ARGS % port])
+    if proc is not None and proc.returncode == 0:
+        # pgrep -f also matches a script's interpreter; ps names the
+        # program (the full path on macOS).
+        for pid in proc.stdout.split():
+            comm = _output(_run(["ps", "-o", "comm=", "-p", pid])).strip()
+            if os.path.basename(comm) == "cloudflared":
+                tunnel = True
+    return llama, tunnel
 
 
 def tunnel_url():
@@ -351,7 +375,7 @@ def shadowed(port, key):
 
 def server_facts(plat, port, key):
     """stopped, loading, ready, or foreign -- something else answers."""
-    llama_up, cf_up = processes(plat)
+    llama_up, cf_up = processes(plat, port)
     root, status = locate(plat, port, key)
     info = opencode.probe(root + "/v1", key) if status == 200 else None
     if status == 200:
@@ -449,6 +473,7 @@ def build_args(req):
         "stop": ["stop"],
         "key-rotate": ["key", "rotate"],
         "opencode": ["opencode"],
+        "pi": ["pi"],
         "self-update": ["self-update"],
         "self-update-check": ["self-update", "--check"],
     }
@@ -481,6 +506,7 @@ TITLES = {
     "stop": "Stop the server",
     "key-rotate": "Rotate the API key",
     "opencode": "Set up OpenCode",
+    "pi": "Set up pi",
     "self-update": "Update kiln",
     "self-update-check": "Check for a kiln update",
 }

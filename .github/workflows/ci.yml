@@ -56,6 +56,16 @@ jobs:
       - name: kiln opencode
         run: python3 .github/scripts/test_opencode.py
 
+      # kiln pi edits pi's models.json, which pi rejects whole when any
+      # part breaks its schema; these check every write against it.
+      - name: kiln pi
+        run: python3 .github/scripts/test_pi.py
+
+      # Linux and WSL setup pick a llama.cpp build from nvidia-smi; these
+      # pin that an NVIDIA card gets CUDA under both header wordings.
+      - name: llama.cpp build choice
+        run: python3 .github/scripts/test_nvidia_smi.py
+
       # kiln self-update rewrites the user's checkout; these pin that it
       # refuses rather than discard a local edit or a local commit.
       - name: kiln self-update
@@ -66,6 +76,11 @@ jobs:
       # never opens a tunnel and always frees the GPU.
       - name: control
         run: python3 .github/scripts/test_control.py
+
+      # kiln stop used to pkill every cloudflared; these pin that it
+      # stops only the quick tunnel to kiln's own port.
+      - name: kiln's own tunnel
+        run: python3 .github/scripts/test_tunnel.py
 
       - name: benchmark
         run: python3 .github/scripts/test_bench.py

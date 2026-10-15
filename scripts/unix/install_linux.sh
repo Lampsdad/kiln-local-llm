@@ -4,25 +4,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
 echo "============================================================"
-echo " Local Model Runtime - Linux Install (Vulkan)"
+echo " Local Model Runtime - Linux Install"
 echo "============================================================"
 echo
 
 # ── CUDA check ───────────────────────────────────────────────
 if ! command -v nvidia-smi &>/dev/null; then
-    echo "WARNING: nvidia-smi not found. The Vulkan build can still use an NVIDIA driver."
-    echo "         Without one, this install falls through to the CPU build."
+    echo "WARNING: nvidia-smi not found, so this installs the Vulkan build, which"
+    echo "         can still drive a GPU outside WSL. Without one it falls through"
+    echo "         to the CPU build."
 else
     echo "[OK] NVIDIA GPU detected: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 fi
 
 # ── llama-bin ────────────────────────────────────────────────
-# Vulkan, not the CUDA tarball. This script is the WSL path, and the
-# Ubuntu CUDA build is the wrong package there. The tag lookup is
-# shared with Fedora: /releases/latest no longer ships binaries.
+# NVIDIA gets the CUDA build matched to the driver, with its cudart
+# tarball; anything else gets Vulkan, then CPU. That holds under WSL
+# too: WSL passes CUDA through (libcuda is in /usr/lib/wsl/lib), while
+# its Vulkan sees no GPU at all, so the Vulkan build ran on the CPU.
+# On a 5090 the WSL CUDA build matched the Windows one: 63 vs 65
+# tok/s generating, 3,680 vs 3,646 tok/s on a 4K prompt (b11669).
+# The tag lookup is shared with Fedora: /releases/latest no longer
+# ships binaries.
 # shellcheck source=lib_llama_bin.sh
 . "$SCRIPT_DIR/lib_llama_bin.sh"
-kiln_install_llama_bin vulkan
+kiln_install_llama_bin auto
 
 # ── cloudflared ──────────────────────────────────────────────
 if command -v cloudflared &>/dev/null; then

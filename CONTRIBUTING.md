@@ -38,7 +38,7 @@ changes it with a preference.
 kiln.bat / kiln.sh     the front door
 scripts/windows/       everything cmd.exe runs
 scripts/unix/          everything macOS and Linux run
-scripts/*.py           shared Python: hardware.py, opencode.py, ...
+scripts/*.py           shared Python: hardware.py, opencode.py, pi_agent.py, ...
 assets/                the wordmark
 ```
 
@@ -140,8 +140,11 @@ re-downloading weights or relearning commands.
 bash -n $(git ls-files '*.sh')
 shellcheck --severity=error $(git ls-files '*.sh')
 python3 .github/scripts/test_opencode.py
+python3 .github/scripts/test_pi.py
+python3 .github/scripts/test_nvidia_smi.py
 python3 .github/scripts/test_selfupdate.py
 python3 .github/scripts/test_control.py
+python3 .github/scripts/test_tunnel.py
 python3 .github/scripts/test_bench.py
 python3 .github/scripts/test_path.py
 python3 .github/scripts/test_tui.py    # app tests need Textual installed

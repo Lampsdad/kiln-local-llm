@@ -11,6 +11,7 @@
 #    ./kiln.sh stop           stop server and tunnel
 #    ./kiln.sh key [show|rotate]
 #    ./kiln.sh opencode       list the local models in OpenCode
+#    ./kiln.sh pi             list the local models in pi
 #    ./kiln.sh self-update    update kiln itself from GitHub
 #    ./kiln.sh tui            full-screen app, with a benchmark
 #    ./kiln.sh bench | quality | clean | help
@@ -276,6 +277,8 @@ usage() {
    opencode          list the local models in OpenCode on this machine
                      (--print to preview, --remove to undo,
                      --url URL to pin the server address)
+   pi                list the local models in pi on this machine
+                     (the same --print, --remove and --url)
    self-update       update kiln itself to the newest release
                      (--main to follow every change on main,
                      --check to only report what is available)
@@ -348,7 +351,12 @@ case "$CMD" in
         ;;
     stop)
         pkill -x llama-server 2>/dev/null && echo " stopped llama-server" || echo " llama-server was not running"
-        pkill -x cloudflared  2>/dev/null && echo " stopped cloudflared"  || true
+        # Only kiln's own tunnel: other cloudflared processes, such as
+        # a named tunnel or T3 Code's remote access, are left running.
+        # shellcheck source=scripts/unix/lib_tunnel.sh
+        . "$UNIX/lib_tunnel.sh"
+        port="$(sed -n 's/^PORT=\([0-9][0-9]*\)$/\1/p' "$START" 2>/dev/null | head -1)"
+        kiln_stop_tunnel "${port:-8080}" && echo " stopped cloudflared" || true
         ;;
     key)
         [ "$ARG" = rotate ] && rm -f ./api_key.txt
@@ -422,6 +430,18 @@ case "$CMD" in
         . "$UNIX/lib_api_key.sh"
         shift
         exec "$PY" "$ROOT/scripts/opencode.py" "$@"
+        ;;
+    pi)
+        if [ -z "$PY" ]; then
+            echo "kiln: needs python3 to write pi's models.json." >&2
+            exit 1
+        fi
+        # pi reads api_key.txt on its first request to the server, so
+        # make sure there is one to read.
+        # shellcheck source=scripts/unix/lib_api_key.sh
+        . "$UNIX/lib_api_key.sh"
+        shift
+        exec "$PY" "$ROOT/scripts/pi_agent.py" "$@"
         ;;
     self-update)
         if [ -z "$PY" ]; then

@@ -38,6 +38,7 @@ class BuildArgs(unittest.TestCase):
         self.ok({"action": "stop"}, ["stop"])
         self.ok({"action": "key-rotate"}, ["key", "rotate"])
         self.ok({"action": "opencode"}, ["opencode"])
+        self.ok({"action": "pi"}, ["pi"])
         self.ok({"action": "self-update"}, ["self-update"])
         self.ok({"action": "self-update-check"}, ["self-update", "--check"])
         self.ok({"action": "get"}, ["get"])
@@ -81,7 +82,16 @@ class Ports(unittest.TestCase):
         self.assertEqual(control.server_port("windows"), 8080)
         self.assertEqual(control.server_port("mac"), 8080)
         self.assertEqual(control.server_port("fedora"), 8080)
-        self.assertEqual(control.server_port("linux"), 8081)
+        self.assertEqual(control.server_port("linux"), 8080)
+
+    def test_clients_are_configured_for_the_port_servers_use(self):
+        # kiln opencode and kiln pi write this port into their configs.
+        # start_linux.sh once served on 8081 and every WSL and Linux
+        # client config pointed at nothing.
+        import opencode
+        for plat in ("windows", "mac", "fedora", "linux"):
+            with self.subTest(plat):
+                self.assertEqual(control.server_port(plat), opencode.PORT)
 
     def test_missing_script_falls_back(self):
         self.assertEqual(control.server_port("plan9"), 8080)
@@ -138,7 +148,7 @@ class FindingTheServer(unittest.TestCase):
     def test_a_stopped_server_behind_another_program_gets_a_way_past(self):
         saved = control.processes
         self.addCleanup(setattr, control, "processes", saved)
-        control.processes = lambda plat: (False, False)
+        control.processes = lambda plat, port: (False, False)
         port = self.serve((200, "<html>OpenTDF</html>"))
         facts = control.server_facts("windows", port, "")
         self.assertEqual((facts["state"], facts["shadowed"]),

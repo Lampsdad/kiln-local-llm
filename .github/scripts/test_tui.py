@@ -260,6 +260,14 @@ class App(unittest.TestCase):
         _, ctl = self.drive(go)
         self.assertEqual(ctl.requests, [])
 
+    def test_pi_runs_without_asking(self):
+        async def go(app, pilot):
+            await pilot.press("p")
+            await pilot.pause(0.2)
+            self.assertNotIsInstance(app.screen, self.tui_app.Confirm)
+        _, ctl = self.drive(go)
+        self.assertEqual(ctl.requests, [{"action": "pi"}])
+
     def test_script_output_is_text_not_markup(self):
         async def go(app, pilot):
             await pilot.press("o")             # OpenCode: no confirmation

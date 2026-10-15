@@ -32,6 +32,7 @@ folder.
 [Choosing a quant](#choosing-a-quant) ·
 [Using with Cursor](#using-with-cursor) ·
 [Using with OpenCode](#using-with-opencode) ·
+[Using with pi](#using-with-pi) ·
 [Security](#security) ·
 [Scripts](#scripts) ·
 [Tuned settings](#tuned-server-settings) ·
@@ -232,6 +233,7 @@ kiln start ablit  :: skip the picker
 kiln stop         :: stop the server and the tunnel
 kiln key show     :: print the API key for Cursor
 kiln opencode     :: list the local models in OpenCode
+kiln pi           :: list the local models in pi
 kiln bench        :: quant speed and throughput sweep
 kiln clean        :: reclaim disk from superseded GGUFs
 kiln self-update  :: update kiln itself to the newest release
@@ -271,6 +273,7 @@ Fedora/RHEL and calls the right platform script for you:
 ./kiln.sh stop
 ./kiln.sh key show
 ./kiln.sh opencode        # list the local models in OpenCode
+./kiln.sh pi              # list the local models in pi
 ./kiln.sh bench           # quant speed and throughput sweep
 ./kiln.sh quality         # KL-divergence of each quant vs Q8_0
 ./kiln.sh self-update     # update kiln itself to the newest release
@@ -714,6 +717,51 @@ the address with `kiln opencode --url https://llm.example.com/v1`, or use
 
 ---
 
+## Using with pi
+
+[pi](https://pi.dev) is a small terminal coding agent. Install it with
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, which
+needs Node 22.19 or newer. The older `@mariozechner/pi-coding-agent`
+package is deprecated. Then:
+
+```bat
+kiln pi                :: Windows
+```
+```bash
+./kiln.sh pi           # WSL, Linux, macOS
+```
+
+This adds a `kiln` provider to pi's `models.json` (`~/.pi/agent/`, which
+is `C:\Users\<you>\.pi\agent` on Windows, or `$PI_CODING_AGENT_DIR`) and
+leaves everything else in that file alone. pi reads the file again
+whenever `/model` opens, so a running pi needs no restart. Pick a model
+there, or run `pi --model kiln/qwen3.8-27b`.
+
+- **Use this rather than pi's built-in llama.cpp provider.** That one
+  drives llama-server's router mode. `kiln start` serves a single model
+  with its MTP draft head, so it would list nothing. The `kiln` provider
+  sends llama-server the same settings pi's own provider does.
+- **Every build you have downloaded is listed**, with the context window
+  `kiln start` would open for it, the same as for OpenCode.
+- **Thinking is on or off.** `/thinking` offers `off` and `medium`,
+  which turn Qwen's thinking off and on through its chat template.
+- **The API key is referenced, not copied.** pi runs `cat` on
+  `api_key.txt` for every request it sends to a kiln model, so `kiln key
+  rotate` takes effect at once, with no re-run. On Windows pi runs that
+  command through Git Bash, which it needs anyway. `kiln pi` says so
+  when pi would fall back to WSL's bash or cmd, which cannot run it.
+- **It refuses rather than guesses**, as `kiln opencode` does. pi
+  rejects all of `models.json` when any part of it is invalid, which
+  would hide your other providers too, so CI checks every write against
+  pi's schema.
+
+pi in WSL and pi on Windows are separate installs, so run `kiln pi` on
+each side you use. The address is worked out as in the
+[OpenCode table](#using-with-opencode), and `--url`, `--print` and
+`--remove` work the same way.
+
+---
+
 ## Security
 
 The quick-tunnel URL is **public** — anyone who guesses or scrapes the
@@ -781,6 +829,7 @@ NOTES.md               why the tuned constants are what they are
 | `lib_variants.bat` | Resolves a build to its repo, filename prefix, Cursor alias, MTP head, projector and launch flags. Reads the registry from `hardware.py`. |
 | `lib_api_key.bat` | Generates the API key, locks the file to your account, hands back `API_KEY`. |
 | `lib_ui.bat` | ANSI palette for the CLI. Degrades to empty strings under `NO_COLOR`. |
+| `kiln_tunnel.ps1` | Finds or stops kiln's own Cloudflare tunnel, the one forwarding to kiln's port, and no other `cloudflared.exe`. Behind `kiln stop` and `start.bat`. |
 | `kiln_path.ps1` | Puts `kiln` on PATH: a `kiln.cmd` shim in `%USERPROFILE%\.local\bin`, and that folder on the user PATH. Behind `kiln path` and `kiln setup`. |
 
 **Shared** (`scripts/`)
@@ -789,6 +838,7 @@ NOTES.md               why the tuned constants are what they are
 |---|---|
 | `hardware.py` | The model registry and the sizing arithmetic. Detects the GPU, picks model + quant + MTP + context, and generates the tables above. Used by every other script on both platforms. |
 | `opencode.py` | Writes the `kiln` provider into OpenCode's config. Detects Windows, WSL or Linux and works out the server URL. Behind `kiln opencode`. |
+| `pi_agent.py` | Writes the `kiln` provider into pi's `models.json`, with the same server probe and context sizing as `opencode.py`. Behind `kiln pi`. |
 | `selfupdate.py` | Fast-forwards the checkout to the newest release, or to `main` if you opted in. Refuses rather than overwrite local edits or commits. Behind `kiln self-update` and the board's `kiln` row. |
 | `control.py` | Reads the same state as the status board and runs kiln commands for `kiln tui` and the benchmark, from a fixed list. |
 | `bench.py` | The benchmark: starts each setup with `kiln start`, times real requests, recommends one. Also runs on its own. |
@@ -799,6 +849,7 @@ NOTES.md               why the tuned constants are what they are
 | Script | Purpose |
 |---|---|
 | `install_mac.sh` / `install_linux.sh` / `install_fedora.sh` | One-time setup, per platform. |
+| `lib_tunnel.sh` | Finds or stops kiln's own Cloudflare tunnel, the one forwarding to kiln's port, and no other `cloudflared`. Behind `kiln stop` and the start scripts. |
 | `kiln_path.sh` | Links `~/.local/bin/kiln` to this checkout's `kiln.sh`. Behind `kiln path` and the setup scripts. |
 | `download.sh` | Weights + MTP head + vision projector. `QUANT=` and `VARIANT=` override. |
 | `start_mac.sh` / `start_linux.sh` / `start_fedora.sh` | Tuned launchers. Context comes from `hardware.py`, falling back to `--fit on`. |
