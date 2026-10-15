@@ -141,6 +141,7 @@ bash -n $(git ls-files '*.sh')
 shellcheck --severity=error $(git ls-files '*.sh')
 python3 .github/scripts/test_opencode.py
 python3 .github/scripts/test_pi.py
+python3 .github/scripts/test_nvidia_smi.py
 python3 .github/scripts/test_selfupdate.py
 python3 .github/scripts/test_control.py
 python3 .github/scripts/test_bench.py

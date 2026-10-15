@@ -61,6 +61,11 @@ jobs:
       - name: kiln pi
         run: python3 .github/scripts/test_pi.py
 
+      # Linux and WSL setup pick a llama.cpp build from nvidia-smi; these
+      # pin that an NVIDIA card gets CUDA under both header wordings.
+      - name: llama.cpp build choice
+        run: python3 .github/scripts/test_nvidia_smi.py
+
       # kiln self-update rewrites the user's checkout; these pin that it
       # refuses rather than discard a local edit or a local commit.
       - name: kiln self-update

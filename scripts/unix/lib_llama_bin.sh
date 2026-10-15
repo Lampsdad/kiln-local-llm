@@ -9,8 +9,8 @@
 #                                    the driver, plus the cudart
 #                                    libs that tarball does not ship.
 #                                    Otherwise Vulkan, then CPU.
-#    kiln_install_llama_bin vulkan   Vulkan, then CPU. This is what
-#                                    WSL uses: the CUDA Ubuntu build
+#    kiln_install_llama_bin vulkan   Vulkan, then CPU. Not for WSL:
+#                                    its Vulkan sees no GPU, so Vulkan
 #                                    is the wrong package there.
 #
 #  GitHub's /releases/latest is the v0.x stable line, which ships
@@ -40,8 +40,12 @@ kiln_install_llama_bin() {
         return 1
     fi
 
+    # The driver's CUDA version, from nvidia-smi's header. Newer
+    # nvidia-smi (615.65 here) prints "CUDA UMD Version: 13.4" where
+    # it printed "CUDA Version: 13.4"; missing that sent every NVIDIA
+    # card to Vulkan.
     if command -v nvidia-smi >/dev/null 2>&1; then
-        cuda="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9.]*\).*/\1/p' | head -1)"
+        cuda="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA \(UMD \)\{0,1\}Version: \([0-9][0-9.]*\).*/\2/p' | head -1)"
     fi
 
     echo "[*] Fetching the newest llama.cpp build (bNNNN, not /releases/latest)..."
