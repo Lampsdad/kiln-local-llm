@@ -330,6 +330,15 @@ class App(unittest.TestCase):
             self.assertIn("v9.9.9", app.sub_title)
         self.drive(check)
 
+    def test_a_status_that_arrives_while_quitting_is_dropped(self):
+        # The status worker can finish after quitting has begun taking the
+        # widgets down; what it read then must not crash the app.
+        async def go(app, pilot):
+            s = app.status
+            await app.query_one("#next").remove()
+            app.show_status(s)
+        self.drive(go)
+
     def test_start_carries_the_chosen_options(self):
         async def go(app, pilot):
             await pilot.press("down")          # the abliterated build

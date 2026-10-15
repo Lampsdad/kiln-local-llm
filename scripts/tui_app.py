@@ -28,6 +28,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
 from textual.widgets import (Button, DataTable, Footer, Header, Label,
@@ -874,6 +875,12 @@ class KilnApp(App):
                 row=self.row_ids.index(variant))
 
     def show_status(self, s):
+        # The worker that read this can finish after quitting has begun
+        # taking the widgets down. A status with nowhere to go is dropped.
+        try:
+            self.query_one("#next", Static)
+        except NoMatches:
+            return
         first = self.status is None
         self.status = s
         chosen = (s.get("benchmark") or {}).get("chosen")
