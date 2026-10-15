@@ -2,8 +2,9 @@
 # Run the Cursor quick tunnel and keep Cursor's OpenAI workaround in
 # step with it. cloudflared is a child of this process, not a pkill,
 # so a different cloudflared (T3's named tunnel) is left alone.
-# On the way out, cursor_sync.py down clears a trycloudflare base URL
-# and turns useOpenAIKey off. systemd also calls that on ExecStopPost.
+# On the way out, cursor_sync.py down puts back the OpenAI settings Cursor
+# had before up, if it still points at a trycloudflare URL. systemd also
+# calls that on ExecStopPost.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

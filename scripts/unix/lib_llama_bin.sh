@@ -40,6 +40,17 @@ kiln_install_llama_bin() {
         echo "[OK] llama-bin/ already populated, skipping download."
         return 0
     fi
+    # A Windows checkout used from WSL has the Windows build here. Setup
+    # would replace it with a Linux one, so stop before downloading.
+    if [ -f "llama-bin/llama-server.exe" ]; then
+        echo "ERROR: llama-bin/ in this checkout holds the Windows build (llama-server.exe)."
+        echo "       Setup would replace it with a Linux build, so nothing was changed. Either:"
+        echo "         1. Clone kiln inside WSL and run setup there:"
+        echo "            git clone https://github.com/Lampsdad/kiln-local-llm ~/kiln-local-llm"
+        echo "         2. Move the Windows build aside, then run setup again:"
+        echo "            mv llama-bin llama-bin-windows"
+        return 1
+    fi
 
     local py cuda=""
     # shellcheck source=lib_python.sh
@@ -55,7 +66,14 @@ kiln_install_llama_bin() {
     # it printed "CUDA Version: 13.4"; missing that sent every NVIDIA
     # card to Vulkan.
     if command -v nvidia-smi >/dev/null 2>&1; then
-        cuda="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA \(UMD \)\{0,1\}Version: \([0-9][0-9.]*\).*/\2/p' | head -1)"
+        # A driver that does not match its libraries makes nvidia-smi exit
+        # non-zero. Under pipefail that would end setup here with no message.
+        cuda="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA \(UMD \)\{0,1\}Version: \([0-9][0-9.]*\).*/\2/p' | head -1)" || true
+        if [ -z "$cuda" ]; then
+            echo "WARNING: could not read the driver's CUDA version from nvidia-smi, so this"
+            echo "         installs the Vulkan build, or the CPU one. If nvidia-smi fails, fix the"
+            echo "         driver and run setup again for the CUDA build."
+        fi
     fi
 
     echo "[*] Fetching the newest llama.cpp build (bNNNN, not /releases/latest)..."
@@ -205,10 +223,38 @@ EOF
         fi
     fi
 
-    rm -rf llama-bin
-    mv "$dest" llama-bin
-    echo "[OK] llama.cpp $tag ($kind) installed to llama-bin/."
-    if ! ./llama-bin/llama-server --help 2>&1 | grep -q 'draft-mtp'; then
-        echo "WARNING: this build does not advertise draft-mtp. Qwen3.8 MTP will be off."
+    # The old build moves aside rather than being deleted first, so a
+    # failed move leaves a working llama.cpp in llama-bin/, not none.
+    local old="llama-bin.old.$$" had_old=0
+    if [ -e llama-bin ] || [ -L llama-bin ]; then
+        if ! mv llama-bin "$old"; then
+            echo "ERROR: could not move the existing llama-bin/ aside. Nothing was changed."
+            return 1
+        fi
+        had_old=1
     fi
+    if ! mv "$dest" llama-bin; then
+        # A move across filesystems copies, so a failed one can leave a partial llama-bin/.
+        rm -rf llama-bin
+        echo "ERROR: could not move the new llama.cpp $tag into llama-bin/."
+        if [ "$had_old" = 1 ]; then
+            if mv "$old" llama-bin; then
+                echo "       The previous llama-bin/ is back in place."
+            else
+                echo "       The previous llama-bin/ is still at $old."
+            fi
+        fi
+        return 1
+    fi
+    rm -rf "$old"
+    echo "[OK] llama.cpp $tag ($kind) installed to llama-bin/."
+    # Captured first. With pipefail, grep -q stopping at the first match
+    # makes the server's SIGPIPE count as a failure, so the check would
+    # wrongly report no MTP.
+    local server_help
+    server_help="$(./llama-bin/llama-server --help 2>&1 || true)"
+    case "$server_help" in
+        *draft-mtp*) ;;
+        *) echo "WARNING: this build does not advertise draft-mtp. Qwen3.8 MTP will be off." ;;
+    esac
 }
