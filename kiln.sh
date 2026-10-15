@@ -410,6 +410,9 @@ case "$CMD" in
                 REC_BELOW_MIN)
                     [ "$v" = 1 ] && printf '  %-11s %s\n' "note" \
                         "below the context kiln aims for; it will still load" ;;
+                REC_BELOW_QUALITY)
+                    [ "$v" = 1 ] && printf '  %-11s %s\n' "note" \
+                        "a low-bit quant, below the quality floor; expect weaker output" ;;
                 REC_REASON)   printf '  %-11s %s\n' "no fit" "$v" ;;
             esac
         done
