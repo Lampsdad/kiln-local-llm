@@ -297,7 +297,8 @@ class Runner:
         ("step", text)                   what it is doing now
         ("log", text)                    output from kiln start
         ("result", result)               one setup measured, or failed
-        ("done", document, cancelled)    finished; saved to disk
+        ("done", document, cancelled)    finished; saved to disk, or
+                                         document["save_error"] says why not
     """
 
     def __init__(self, ctl, chosen, depth="quick", emit=None):
@@ -350,9 +351,7 @@ class Runner:
                 self._step("Stopping the server")
             finally:
                 self._stop()
-        doc = None
-        if self.results:
-            doc = save(self.results, self.depth, self.ctl)
+        doc = record(self.results, self.depth) if self.results else None
         self.emit("done", doc, self.cancelled)
         return doc
 
@@ -614,16 +613,35 @@ def write(doc):
     os.replace(tmp, RESULTS_FILE)
 
 
-def save(results, depth, ctl=None):
+def document(results, depth):
+    """The file's contents for a run. Built before anything is written,
+    so the results survive when writing them fails."""
     old = load() or {}
-    doc = {"version": 1, "when": time.strftime("%Y-%m-%d %H:%M"),
-           "depth": depth, "machine": machine(), "results": results,
-           # A choice survives a re-run as long as that setup still
-           # measured cleanly.
-           "chosen": old.get("chosen") if any(
-               r["id"] == (old.get("chosen") or {}).get("id")
-               and not r.get("error") for r in results) else None}
+    return {"version": 1, "when": time.strftime("%Y-%m-%d %H:%M"),
+            "depth": depth, "machine": machine(), "results": results,
+            # A choice survives a re-run as long as that setup still
+            # measured cleanly.
+            "chosen": old.get("chosen") if any(
+                r["id"] == (old.get("chosen") or {}).get("id")
+                and not r.get("error") for r in results) else None}
+
+
+def save(results, depth, ctl=None):
+    doc = document(results, depth)
     write(doc)
+    return doc
+
+
+def record(results, depth):
+    """save, but a file that cannot be written (locked, read-only, full
+    disk) is reported in the document's save_error, not raised: the
+    minutes already measured are still shown."""
+    doc = document(results, depth)
+    try:
+        write(doc)
+    except OSError as e:
+        doc["save_error"] = "could not save %s: %s" % (
+            os.path.basename(RESULTS_FILE), e)
     return doc
 
 
@@ -763,14 +781,17 @@ def main(argv=None):
         # that finished, as cancelling in kiln tui does.
         runner.cancel()
         interrupted = True
-        doc = save(runner.results, depth, ctl) if runner.results else None
+        doc = record(runner.results, depth) if runner.results else None
     if doc:
         print()
         print(report(doc, uncensored, line))
-        print("\nSaved to %s" % os.path.basename(RESULTS_FILE))
+        if "save_error" in doc:
+            print("\n" + doc["save_error"])
+        else:
+            print("\nSaved to %s" % os.path.basename(RESULTS_FILE))
     if interrupted:
         return 130
-    return 0 if doc else 1
+    return 0 if doc and "save_error" not in doc else 1
 
 
 if __name__ == "__main__":
