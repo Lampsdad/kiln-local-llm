@@ -38,6 +38,19 @@ try:
 except ImportError:
     HAVE_TEXTUAL = False
 
+# CI sets this wherever it installs Textual. Then a Textual that will not
+# import fails the run, rather than quietly skipping the app tests.
+REQUIRE_TEXTUAL = os.environ.get("KILN_REQUIRE_TEXTUAL") == "1"
+
+
+class Textual(unittest.TestCase):
+    @unittest.skipUnless(REQUIRE_TEXTUAL, "KILN_REQUIRE_TEXTUAL is not 1")
+    def test_textual_imports_when_it_is_required(self):
+        try:
+            import textual  # noqa: F401,F811
+        except ImportError as err:
+            self.fail("KILN_REQUIRE_TEXTUAL=1, but Textual will not import: %s" % err)
+
 
 class Terminal(io.StringIO):
     def isatty(self):
