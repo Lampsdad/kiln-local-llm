@@ -14,6 +14,7 @@ import http.server
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -170,6 +171,84 @@ def _free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+class JobLogs(unittest.TestCase):
+    """A job's log is deleted when the job ends. On Windows a server the
+    job started can still hold the file open, so a log that will not go is
+    kept and tried again later, rather than left behind for good."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved_tmp = tempfile.tempdir
+        tempfile.tempdir = self.tmp.name
+        self.addCleanup(setattr, tempfile, "tempdir", saved_tmp)
+        saved_windows = control.WINDOWS
+        self.addCleanup(setattr, control, "WINDOWS", saved_windows)
+        control._undeleted_logs.clear()
+        self.addCleanup(control._undeleted_logs.clear)
+        # Stands in for a file that a server holds open.
+        self.refusing = False
+        self.locked = set()
+        real_remove = os.remove
+
+        def remove(path):
+            if self.refusing or path in self.locked:
+                raise PermissionError(13, "The file is in use", path)
+            real_remove(path)
+
+        os.remove = remove
+        self.addCleanup(setattr, os, "remove", real_remove)
+
+    def touch(self, name):
+        path = os.path.join(self.tmp.name, name)
+        open(path, "w").close()
+        return path
+
+    def finished(self, jid):
+        job = control.Job(jid, "get", "t", ["get"])
+        job.start([sys.executable, "-c", "print('hi')"], lambda: None)
+        self.assertEqual(job.wait(20), 0)
+        return job
+
+    def test_a_log_that_will_not_delete_is_tried_again(self):
+        self.refusing = True
+        first = self.finished("1")
+        self.assertTrue(os.path.exists(first.log_path))
+        self.assertEqual(control._undeleted_logs, {first.log_path})
+        self.refusing = False
+        second = self.finished("2")
+        self.assertFalse(os.path.exists(first.log_path))
+        self.assertFalse(os.path.exists(second.log_path))
+        self.assertEqual(control._undeleted_logs, set())
+
+    def test_shutdown_tries_the_kept_logs_again(self):
+        self.refusing = True
+        job = self.finished("1")
+        self.refusing = False
+        control.Control().shutdown()
+        self.assertFalse(os.path.exists(job.log_path))
+
+    def test_windows_sweeps_logs_that_earlier_runs_left(self):
+        old = self.touch("kiln-job-old.log")
+        held = self.touch("kiln-job-held.log")
+        other = self.touch("notes.log")
+        self.locked.add(held)
+        control.WINDOWS = True
+        control.Control()
+        self.assertFalse(os.path.exists(old))
+        # Still held by something: skipped, and kept for a later try.
+        self.assertTrue(os.path.exists(held))
+        self.assertTrue(os.path.exists(other))
+        self.assertEqual(control._undeleted_logs, {held})
+
+    def test_unix_does_not_sweep_at_startup(self):
+        # Another kiln tui may be writing its log right now.
+        stale = self.touch("kiln-job-stale.log")
+        control.WINDOWS = False
+        control.Control()
+        self.assertTrue(os.path.exists(stale))
 
 
 class NextStep(unittest.TestCase):

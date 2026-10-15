@@ -36,6 +36,7 @@ care who else holds it.
 """
 
 import codecs
+import glob
 import os
 import re
 import shutil
@@ -529,6 +530,34 @@ def title_for(req):
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]")
 
+# Logs that could not be deleted when their job finished. On Windows a
+# server the job started still holds the file open, so it is tried again
+# when the next job finishes, and at shutdown.
+_undeleted_logs = set()
+_undeleted_lock = threading.Lock()
+
+
+def remove_logs(paths=()):
+    """Delete these job logs and any kept from before. Those that still
+    cannot be deleted are kept for the next attempt."""
+    with _undeleted_lock:
+        pending = _undeleted_logs | set(paths)
+        _undeleted_logs.clear()
+        for path in pending:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                _undeleted_logs.add(path)
+
+
+def sweep_logs():
+    """Delete the job logs that earlier runs left behind. A log that a
+    running server or job still holds open is skipped, as it should be."""
+    remove_logs(glob.glob(os.path.join(glob.escape(tempfile.gettempdir()),
+                                       "kiln-job-*.log")))
+
 
 class Job:
     """One kiln verb, and everything it has printed so far."""
@@ -596,15 +625,12 @@ class Job:
         self._finish(code, on_finish)
 
     def _finish(self, code, on_finish):
+        # Removed before the exit code is published, so whoever sees the
+        # job finish also sees its log gone.
+        remove_logs([self.log_path])
         with self._lock:
             self.code = code
             self.ended = time.time()
-        # On Windows a server started by this job still holds the file;
-        # it goes when the server does, or with the temp directory.
-        try:
-            os.remove(self.log_path)
-        except OSError:
-            pass
         on_finish()
 
     def _append(self, text, final=False):
@@ -689,6 +715,10 @@ class Control:
         self._slow = None
         self._slow_at = 0.0
         self._slow_lock = threading.Lock()
+        # Not on Unix: a removal never fails there, so nothing is left
+        # behind, and a sweep could take a log another kiln tui is writing.
+        if WINDOWS:
+            sweep_logs()
 
     # ---- state ------------------------------------------------
 
@@ -788,4 +818,5 @@ class Control:
             if job.running and job.action != "start":
                 job.cancel()
                 gone.append(job.title)
+        remove_logs()
         return gone
