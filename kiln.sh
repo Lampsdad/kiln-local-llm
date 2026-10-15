@@ -228,7 +228,7 @@ status() {
     if   [ ! -x "$bin" ];   then echo " Next:  ./kiln.sh setup    install llama.cpp"
     elif [ "$found" = 0 ];  then echo " Next:  ./kiln.sh get      download the weights"
     elif [ "${build:-0}" -gt 0 ] && [ "${build:-0}" -lt "${gmin:-0}" ]; then
-        echo " Next:  rm -rf llama-bin && ./kiln.sh setup"
+        echo " Next:  mv llama-bin llama-bin-backup && ./kiln.sh setup"
         echo "        Gemma 4 needs llama.cpp b${gmin} or newer; this is b${build}."
     elif ! pgrep -x llama-server >/dev/null 2>&1; then
                                  echo " Next:  ./kiln.sh start    serve a model to Cursor"

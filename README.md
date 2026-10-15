@@ -507,7 +507,8 @@ on a card too small for the 12B. It scores 42% on Tau2 to the 31B's 77%,
 and tool calls are most of what Cursor sends.
 
 **It needs llama.cpp b11059 or newer.** On Windows that is
-`kiln update`. On macOS and Linux, `rm -rf llama-bin && ./kiln.sh setup`.
+`kiln update`. On macOS and Linux, `mv llama-bin llama-bin-backup &&
+./kiln.sh setup`, which keeps the old build in `llama-bin-backup/`.
 `kiln start` refuses an older build, and does so before it stops the
 server you are running. Gemma's MTP support is older than that, but the
 fixes for its draft head (b10742), its vision tower (b10798) and

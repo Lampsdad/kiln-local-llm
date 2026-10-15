@@ -172,10 +172,12 @@ kiln_model_args() {
         fi
         if [ "${build:-0}" -gt 0 ] && [ "$build" -lt "$V_MIN_BUILD" ]; then
             # setup skips a llama-bin/ that is already there, so the
-            # old build has to go first.
+            # old build has to move aside first. Moved, not deleted:
+            # macOS setup cannot fetch a build yet, and a failed setup
+            # should not cost the build that still runs Qwen.
             echo "ERROR: ${V_LABEL} needs llama.cpp b${V_MIN_BUILD} or newer;"
             echo "       this is b${build}. For the newest build:"
-            echo "       rm -rf llama-bin && ./kiln.sh setup"
+            echo "       mv llama-bin llama-bin-backup && ./kiln.sh setup"
             exit 1
         elif [ "${build:-0}" -eq 0 ]; then
             echo "[WARN] could not read the llama.cpp build. ${V_LABEL}"

@@ -46,16 +46,19 @@ if exist "llama-bin\llama-server.exe" (
 :: download 404s. The nightly builds are still tagged bNNNN, and the
 :: list endpoint returns them newest-first.
 ::
-:: Two cmd landmines here, both silent:
+:: Three landmines here, all silent:
 ::  - a BARE | works inside a for /f backquote; escaping it as ^| passes
 ::    the caret through to PowerShell and the call dies.
 ::  - Select-Object -First 1 is dropped on this path -- every tag comes
 ::    back regardless. So take the first line in batch with
 ::    'if not defined TAG' instead of trying to limit it in PowerShell.
+::  - Windows PowerShell 5.1 sends Invoke-RestMethod's JSON array down
+::    the pipe as ONE object, so a Where-Object right after it keeps
+::    every tag, v0.N.N included. The parentheses unroll it first.
 :: Keep the for /f on ONE line and outside any if-block.
 echo  Querying GitHub for the latest build...
 set "TAG="
-for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "(Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30' | Where-Object { $_.tag_name -like 'b*' }).tag_name"`) do if not defined TAG set "TAG=%%T"
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "((Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30') | Where-Object { $_.tag_name -like 'b*' }).tag_name"`) do if not defined TAG set "TAG=%%T"
 
 if "%TAG%"=="" (
     echo  ERROR: could not reach the GitHub API.
