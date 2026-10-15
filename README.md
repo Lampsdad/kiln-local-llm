@@ -746,9 +746,10 @@ there, or run `pi --model kiln/qwen3.8-27b`.
 - **Thinking is on or off.** `/thinking` offers `off` and `medium`,
   which turn Qwen's thinking off and on through its chat template.
 - **The API key is referenced, not copied.** pi runs `cat` on
-  `api_key.txt` for its first request and keeps the result until it
-  exits, so `kiln key rotate` takes effect on pi's next start. On
-  Windows pi runs that command through Git Bash, which it needs anyway.
+  `api_key.txt` for every request it sends to a kiln model, so `kiln key
+  rotate` takes effect at once, with no re-run. On Windows pi runs that
+  command through Git Bash, which it needs anyway. `kiln pi` says so
+  when pi would fall back to WSL's bash or cmd, which cannot run it.
 - **It refuses rather than guesses**, as `kiln opencode` does. pi
   rejects all of `models.json` when any part of it is invalid, which
   would hide your other providers too, so CI checks every write against

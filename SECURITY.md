@@ -30,8 +30,9 @@ thing standing between an anonymous request and your GPU.
   a `{file:...}` reference to `api_key.txt`, which OpenCode reads at
   startup, so the credential stays in the one file that is locked down.
 - `kiln pi` does not copy it into pi's `models.json` either. It writes
-  the command `!cat '<repo>/api_key.txt'`, which pi runs on its first
-  request to the server.
+  the command `!cat '<repo>/api_key.txt'`, which pi runs for each
+  request it sends to the server. Any backup kiln makes of `models.json`
+  or OpenCode's config keeps that file's permissions.
 - `kiln self-update` runs only when you ask it to. It fast-forwards from
   the `origin` you cloned, and only to a tagged release unless you opted
   into `main`. The status board's daily check lists tags with
@@ -58,7 +59,8 @@ kiln key set MY-SECRET  :: use a passphrase of your own
 ```
 
 Rotating takes effect on the next server start, and you must paste the new
-value into Cursor. OpenCode and pi pick it up on their own next start.
+value into Cursor. OpenCode picks it up on its next start, and pi on
+its next request.
 
 ## What the scripts do *not* do about it
 

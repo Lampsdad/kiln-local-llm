@@ -16,7 +16,10 @@ KILN_PICK=disk . "$SCRIPT_DIR/lib_variants.sh"
 echo "  build   : ${V_LABEL}"
 . "$SCRIPT_DIR/lib_select.sh"
 BINARY="./llama-bin/llama-server"
-PORT=8081
+# 8080, as on every other platform: kiln opencode, kiln pi and the
+# Cursor tunnel all assume it. slurm-llama.sh keeps 8081 for the
+# cluster, with start-cloudflared-once.sh to match.
+PORT=8080
 LOG="./server.log"
 CF_LOG="./cloudflared.log"
 # Distinct per variant so Cursor cannot silently show the wrong one.

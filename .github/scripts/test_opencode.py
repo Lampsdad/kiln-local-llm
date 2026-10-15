@@ -203,6 +203,14 @@ class WriteTest(Base):
             self.assertEqual(fh.read(), original)
         self.assertFalse(os.path.exists(self.cfg + ".kiln.tmp"))
 
+    @unittest.skipIf(os.name == "nt", "no POSIX modes on Windows")
+    def test_backup_keeps_the_files_mode(self):
+        self.write_cfg('{"provider": {"other": {"options": {"apiKey": "sk-x"}}}}')
+        os.chmod(self.cfg, 0o600)
+        self.assertEqual(self.run_cli()[0], 0)
+        for p in (self.cfg, self.cfg + ".kiln.bak"):
+            self.assertEqual(oct(os.stat(p).st_mode & 0o777), oct(0o600), p)
+
     def test_print_writes_nothing(self):
         code, out, _ = self.run_cli("--print")
         self.assertEqual(code, 0)

@@ -33,12 +33,15 @@ OpenCode; see opencode.py.
 
 THE API KEY IS REFERENCED, NOT COPIED
 -------------------------------------
-apiKey is "!cat '<repo>/api_key.txt'". pi runs that command on the first
-request and keeps the answer until it exits, so `kiln key rotate` takes
-effect on pi's next launch with no re-run. On Windows pi runs it through
-Git Bash, which it needs for its own bash tool anyway, and the path is
-written with forward slashes, which Git Bash accepts. If the file goes
-missing, only the kiln models fail; the rest of pi keeps working.
+apiKey is "!cat '<repo>/api_key.txt'". pi runs that command for every
+request it sends to a kiln model, so `kiln key rotate` takes effect at
+once, with no re-run and no restart. On Windows pi runs it through Git
+Bash, which it needs for its own bash tool anyway, and the path is
+written with forward slashes, which Git Bash accepts. pi looks for Git
+Bash only in Program Files, then takes the first bash.exe on PATH, then
+cmd; WSL's bash.exe and cmd cannot run the command, so this says when
+pi would use one of them. If the file goes missing, only the kiln
+models fail; the rest of pi keeps working.
 
 Usage:
     pi_agent.py                   write the kiln provider
@@ -54,6 +57,7 @@ would not have been safe to.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -94,18 +98,48 @@ THINKING_LEVELS = {"off": "off", "minimal": None, "low": None,
 #  What to write
 # ---------------------------------------------------------------
 
+def key_path():
+    """api_key.txt with forward slashes, which Git Bash reads."""
+    return os.path.abspath(opencode.KEY_FILE).replace("\\", "/")
+
+
 def key_command():
     """The !command pi runs to read api_key.txt.
 
     Single quotes keep spaces and $ literal in sh and Git Bash alike,
     so the only path that cannot be quoted is one containing a quote.
     """
-    path = os.path.abspath(opencode.KEY_FILE).replace("\\", "/")
+    path = key_path()
     if "'" in path or not path.isprintable():
         raise Refused("pi cannot be pointed at %s: the path contains a"
                       " character the key command cannot quote. Move the"
                       " repo to a plainer path." % path)
     return "!cat '%s'" % path
+
+
+def windows_shell_note():
+    """Why pi on Windows could not run the key command, or "".
+
+    pi's own order for !commands: Git Bash in Program Files, then the
+    first bash.exe on PATH, then cmd. It ignores shellPath here. Other
+    bashes (MSYS2, Cygwin) read a C:/ path; WSL's bash.exe and cmd
+    cannot.
+    """
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if base and os.path.isfile(os.path.join(base, "Git", "bin", "bash.exe")):
+            return ""
+    fix = (" Install Git for Windows, which pi's bash tool needs too, or"
+           " the kiln models will fail to authenticate.")
+    bash = shutil.which("bash.exe")
+    if not bash:
+        return ("pi has no bash here, so it runs the key command through"
+                " cmd, which has no cat." + fix)
+    if re.match(r"^[a-z]:\\windows\\(system32|sysnative)\\bash\.exe$",
+                bash.replace("/", "\\").lower()):
+        return ("pi would run the key command in WSL's bash (%s), which"
+                " cannot read %s." % (bash, key_path()) + fix)
+    return ""
 
 
 def model_entry(m):
@@ -136,10 +170,29 @@ def provider_block(base_url, models):
 #  The config file
 # ---------------------------------------------------------------
 
+def windows_shell_path(p):
+    """pi's reading of a Git Bash, Cygwin or WSL path on Windows: /c/x,
+    /cygdrive/c/x and /mnt/c/x all mean C:\\x."""
+    if not p.startswith("/") or p.startswith("//") or "\\" in p:
+        return p
+    m = re.match(r"^/(?:mnt/|cygdrive/)?([a-zA-Z])(?:/(.*))?$", p)
+    if not m:
+        return p
+    return "%s:\\%s" % (m.group(1).upper(), (m.group(2) or "").replace("/", "\\"))
+
+
 def agent_dir():
+    """Where pi reads models.json from, worked out the way pi does it,
+    so a PI_CODING_AGENT_DIR exported from Git Bash or WSL names the
+    same directory here."""
     d = os.environ.get("PI_CODING_AGENT_DIR")
     if d:
-        return os.path.abspath(os.path.expanduser(d))
+        if os.name == "nt":
+            d = windows_shell_path(d)
+        # pi expands ~ and ~/ only; ~user stays as written.
+        if d == "~" or d.startswith("~/") or (os.name == "nt" and d.startswith("~\\")):
+            d = os.path.join(os.path.expanduser("~"), d[2:])
+        return os.path.abspath(d)
     return os.path.join(os.path.expanduser("~"), ".pi", "agent")
 
 
@@ -205,7 +258,7 @@ def cmd_remove(path):
         return 0
     # "providers" stays, even empty: pi requires it.
     del providers[PROVIDER_ID]
-    opencode.save_config(path, doc, raw)
+    opencode.save_config(path, doc, raw, private=True)
     print("\n Removed the kiln provider from %s" % path)
     if default_is_kiln(path):
         print(" pi's settings.json still starts on a kiln model. Pick another"
@@ -242,8 +295,15 @@ def cmd_write(path, url, dry):
         return 0
 
     doc, raw = load_config(path)
-    doc.setdefault("providers", {})[PROVIDER_ID] = block
-    backup = opencode.save_config(path, doc, raw)
+    # "providers": null is as good as absent.
+    if doc.get("providers") is None:
+        doc["providers"] = {}
+    doc["providers"][PROVIDER_ID] = block
+    backup = opencode.save_config(path, doc, raw, private=True)
+    if env == "windows":
+        note = windows_shell_note()
+        if note:
+            notes.append(note)
     if not shutil.which("pi"):
         notes.append("pi is not on PATH here. Install it with `npm install"
                      " -g --ignore-scripts %s` (Node 22.19 or newer), or see"

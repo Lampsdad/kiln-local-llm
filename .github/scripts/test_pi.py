@@ -27,6 +27,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -285,6 +286,31 @@ class WriteTest(Base):
         self.assertEqual(self.run_cli()[0], 0)
         self.assertEqual(violations(SCHEMA, json.loads(self.read_cfg())), [])
 
+    def test_null_providers_gets_an_object(self):
+        self.write_cfg('{"providers": null}')
+        self.assertEqual(self.run_cli()[0], 0)
+        self.assertEqual(violations(SCHEMA, json.loads(self.read_cfg())), [])
+
+    @unittest.skipIf(os.name == "nt", "no POSIX modes on Windows")
+    def test_backup_keeps_the_files_mode(self):
+        # models.json can hold other providers' literal keys.
+        self.write_cfg('{"providers": {"other": {"apiKey": "sk-secret"}}}')
+        os.chmod(self.cfg, 0o600)
+        self.assertEqual(self.run_cli()[0], 0)
+        for p in (self.cfg, self.cfg + ".kiln.bak"):
+            self.assertEqual(oct(os.stat(p).st_mode & 0o777), oct(0o600), p)
+
+    @unittest.skipIf(os.name == "nt", "no POSIX modes on Windows")
+    def test_a_new_agent_dir_is_private(self):
+        # pi makes ~/.pi and ~/.pi/agent 0700; kiln creating them first
+        # must not leave them more open than pi would.
+        self.cfg = os.path.join(self.dir, "home", ".pi", "agent", "models.json")
+        self.assertEqual(self.run_cli()[0], 0)
+        for d in (os.path.join(self.dir, "home", ".pi"),
+                  os.path.dirname(self.cfg)):
+            self.assertEqual(oct(os.stat(d).st_mode & 0o777), oct(0o700), d)
+        self.assertEqual(oct(os.stat(self.cfg).st_mode & 0o777), oct(0o600))
+
     def test_print_writes_nothing(self):
         code, out, _ = self.run_cli("--print")
         self.assertEqual(code, 0)
@@ -305,6 +331,17 @@ class WriteTest(Base):
                 os.environ.pop("PI_CODING_AGENT_DIR", None)
             else:
                 os.environ["PI_CODING_AGENT_DIR"] = saved
+
+    def test_shell_style_agent_dirs_read_as_pi_reads_them(self):
+        # pi on Windows turns these into drive paths; kiln must edit the
+        # same file pi reads.
+        conv = pi_agent.windows_shell_path
+        self.assertEqual(conv("/c/Users/me/.pi/agent"), "C:\\Users\\me\\.pi\\agent")
+        self.assertEqual(conv("/mnt/d/pi"), "D:\\pi")
+        self.assertEqual(conv("/cygdrive/c/x/y"), "C:\\x\\y")
+        self.assertEqual(conv("/c"), "C:\\")
+        for unchanged in ("/home/me/.pi", "//server/share", "C:\\x", "rel/dir"):
+            self.assertEqual(conv(unchanged), unchanged)
 
     @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
     def test_symlinked_config_stays_a_symlink(self):
@@ -332,6 +369,35 @@ class KeyCommandTest(Base):
                              text=True, timeout=10)
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout.strip(), KEY)
+
+
+class WindowsShellTest(Base):
+    """pi on Windows runs !commands in Git Bash from Program Files, else
+    the first bash.exe on PATH, else cmd."""
+
+    def note(self, program_files, which):
+        env = {"ProgramFiles": program_files}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(pi_agent.shutil, "which", lambda _: which):
+            os.environ.pop("ProgramFiles(x86)", None)
+            return pi_agent.windows_shell_note()
+
+    def test_git_bash_in_program_files_is_fine(self):
+        pf = os.path.join(self.dir, "Program Files")
+        os.makedirs(os.path.join(pf, "Git", "bin"))
+        open(os.path.join(pf, "Git", "bin", "bash.exe"), "w").close()
+        self.assertEqual(self.note(pf, r"C:\Windows\System32\bash.exe"), "")
+
+    def test_wsl_bash_is_named(self):
+        note = self.note(self.dir, r"C:\WINDOWS\system32\bash.exe")
+        self.assertIn("WSL", note)
+        self.assertIn("Git for Windows", note)
+
+    def test_no_bash_means_cmd(self):
+        self.assertIn("cmd", self.note(self.dir, None))
+
+    def test_another_bash_reads_drive_paths(self):
+        self.assertEqual(self.note(self.dir, r"C:\msys64\usr\bin\bash.exe"), "")
 
 
 class RefuseTest(Base):

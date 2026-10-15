@@ -58,6 +58,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -534,8 +535,40 @@ def load_config(path):
     return doc, raw
 
 
-def save_config(path, doc, raw):
-    """Write doc to path, atomically. Returns the backup made, if any."""
+def _makedirs(d, mode):
+    """os.makedirs, with mode on every directory it creates rather than
+    only the last one."""
+    missing = []
+    while not os.path.isdir(d):
+        missing.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for p in reversed(missing):
+        try:
+            os.mkdir(p, mode)
+        except FileExistsError:
+            pass
+
+
+def _create(path, mode, newline):
+    """Open path for writing, created with mode from the start."""
+    if os.path.exists(path):
+        os.remove(path)
+    # O_BINARY: without it Windows turns every \n into \r\n below the
+    # newline= that open() is given.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, mode)
+    return open(fd, "w", encoding="utf-8", newline=newline)
+
+
+def save_config(path, doc, raw, private=False):
+    """Write doc to path, atomically. Returns the backup made, if any.
+
+    private creates missing directories 0700 and a new file 0600, as pi
+    does for its agent directory. OpenCode's are left to the umask.
+    """
     text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
     if raw is not None and text == raw:
         return None
@@ -543,18 +576,26 @@ def save_config(path, doc, raw):
     real = os.path.realpath(path)
     d = os.path.dirname(real)
     try:
-        os.makedirs(d, exist_ok=True)
+        # The backup and the temporary file start with the file's own
+        # mode: a config locked to its owner can hold other providers'
+        # keys, and must not sit in a readable copy even briefly. On
+        # Windows the only mode bit is read-only.
+        if raw is not None and os.name != "nt":
+            mode = stat.S_IMODE(os.stat(real).st_mode)
+        else:
+            mode = 0o600 if private else 0o666
+        _makedirs(d, 0o700 if private else 0o777)
         backup = None
         # Comments do not survive a JSON round-trip. The backup keeps the
         # file as it was before kiln first touched it, so later runs must
         # not overwrite it with kiln's own output.
         if raw is not None and not os.path.exists(real + ".kiln.bak"):
             backup = real + ".kiln.bak"
-            with open(backup, "w", encoding="utf-8", newline="") as fh:
+            with _create(backup, mode, "") as fh:
                 fh.write(raw)
         tmp = real + ".kiln.tmp"
         try:
-            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            with _create(tmp, mode, "\n") as fh:
                 fh.write(text)
             # On Windows the only mode bit is read-only, which would make
             # the replace below fail rather than preserve anything.
