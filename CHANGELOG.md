@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`kiln pi`** (`./kiln.sh pi`) lists the local models in
+  [pi](https://pi.dev), the terminal coding agent. It adds a `kiln`
+  provider to pi's `models.json` and takes the same `--print`,
+  `--remove` and `--url` as `kiln opencode`. pi's built-in llama.cpp
+  provider needs llama-server's router mode, so it lists nothing for a
+  server `kiln start` runs. The key is read from `api_key.txt` by a
+  command rather than copied. `p` in `kiln tui` runs it.
 - **Cursor follows the quick tunnel.** `scripts/unix/cursor_tunnel.sh`
   starts cloudflared and writes the new `*.trycloudflare.com` host into
   Cursor's OpenAI base URL, with the API-key workaround on. Stopping

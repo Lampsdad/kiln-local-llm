@@ -190,6 +190,7 @@ On the main screen
   b        benchmark: measure each setup and pick one
   k / u / t  copy the API key / local URL / tunnel URL
   o        list the models in OpenCode
+  p        list the models in pi
   i        install llama.cpp, or re-run setup
   g        upgrade llama.cpp (Windows)
   U        update kiln itself
@@ -718,6 +719,7 @@ class KilnApp(App):
         Binding("m", "toggle_mtp", "MTP on/off", show=False),
         Binding("l", "toggle_local", "Tunnel on/off", show=False),
         Binding("o", "simple('opencode')", "OpenCode", show=False),
+        Binding("p", "simple('pi')", "pi", show=False),
         Binding("i", "simple('setup')", "Setup", show=False),
         Binding("g", "simple('update')", "Upgrade llama.cpp", show=False),
         Binding("U", "simple('self-update')", "Update kiln", show=False),
@@ -1197,6 +1199,7 @@ class KilnApp(App):
                        "paste in the new key, and the server only loads it "
                        "on its next start."),
         "opencode": None,
+        "pi": None,
     }
 
     def action_simple(self, action):

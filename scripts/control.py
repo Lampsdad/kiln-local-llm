@@ -449,6 +449,7 @@ def build_args(req):
         "stop": ["stop"],
         "key-rotate": ["key", "rotate"],
         "opencode": ["opencode"],
+        "pi": ["pi"],
         "self-update": ["self-update"],
         "self-update-check": ["self-update", "--check"],
     }
@@ -481,6 +482,7 @@ TITLES = {
     "stop": "Stop the server",
     "key-rotate": "Rotate the API key",
     "opencode": "Set up OpenCode",
+    "pi": "Set up pi",
     "self-update": "Update kiln",
     "self-update-check": "Check for a kiln update",
 }

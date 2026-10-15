@@ -38,6 +38,7 @@ class BuildArgs(unittest.TestCase):
         self.ok({"action": "stop"}, ["stop"])
         self.ok({"action": "key-rotate"}, ["key", "rotate"])
         self.ok({"action": "opencode"}, ["opencode"])
+        self.ok({"action": "pi"}, ["pi"])
         self.ok({"action": "self-update"}, ["self-update"])
         self.ok({"action": "self-update-check"}, ["self-update", "--check"])
         self.ok({"action": "get"}, ["get"])
