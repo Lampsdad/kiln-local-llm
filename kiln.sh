@@ -74,6 +74,15 @@ START="$UNIX/start_${PLATFORM}.sh"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# The port the start script serves on. kiln's server and tunnel are
+# found by it, so the status board and kiln stop agree on which
+# processes are kiln's.
+server_port() {
+    local port
+    port="$(sed -n 's/^PORT=\([0-9][0-9]*\)$/\1/p' "$START" 2>/dev/null | head -1)"
+    echo "${port:-8080}"
+}
+
 # hardware.py sizes every launch and holds the model registry.
 # Empty when Python is absent; every caller below degrades rather
 # than failing, so kiln still works on a machine that only has
@@ -81,6 +90,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Store stub, which is on PATH as "python3" but runs nothing.
 . "$UNIX/lib_python.sh"
 PY="$KILN_PY"
+# shellcheck source=scripts/unix/lib_server.sh
+. "$UNIX/lib_server.sh"
 
 # Every family the registry knows. Qwen3.8 is what kiln picks for
 # you; Gemma 4 runs only when named.
@@ -98,7 +109,7 @@ is_variant() {
 
 # ---- status board ------------------------------------------
 status() {
-    local bin="./llama-bin/llama-server"
+    local bin="./llama-bin/llama-server" bin_help=""
     printf '\n'
     sed 's/^/  /' "$ROOT/assets/banner.txt" 2>/dev/null || true
     printf '\n'
@@ -134,11 +145,15 @@ status() {
         else
             printf '  %-14s %s\n' "llama.cpp" "installed"
         fi
-        if "$bin" --help 2>&1 | grep -q 'draft-mtp'; then
-            printf '  %-14s %s\n' "MTP support" "available"
-        else
-            printf '  %-14s %s\n' "MTP support" "unavailable  build predates b9180"
-        fi
+        # Read whole, not piped into grep -q, which quits at the first
+        # match and fails the pipeline under pipefail. See lib_select.sh.
+        bin_help="$("$bin" --help 2>&1 || true)"
+        case "$bin_help" in
+            *draft-mtp*)
+                printf '  %-14s %s\n' "MTP support" "available" ;;
+            *)
+                printf '  %-14s %s\n' "MTP support" "unavailable  build predates b9180" ;;
+        esac
     else
         printf '  %-14s %s\n' "llama.cpp" "not installed    ./kiln.sh setup"
     fi
@@ -211,7 +226,10 @@ status() {
     [ "$found" = 0 ] && printf '  %-14s %s\n' "weights" "none         ./kiln.sh get"
 
     printf ' %s\n' '------------------------------------------------------------'
-    if pgrep -x llama-server >/dev/null 2>&1; then
+    local port running
+    port="$(server_port)"
+    running="$(kiln_server_pids "$port")"
+    if [ -n "$running" ]; then
         printf '  %-14s %s\n' "server" "running"
     else
         printf '  %-14s %s\n' "server" "stopped"
@@ -237,7 +255,7 @@ status() {
     elif [ "${build:-0}" -gt 0 ] && [ "${build:-0}" -lt "${gmin:-0}" ]; then
         echo " Next:  mv llama-bin llama-bin-backup && ./kiln.sh setup"
         echo "        Gemma 4 needs llama.cpp b${gmin} or newer; this is b${build}."
-    elif ! pgrep -x llama-server >/dev/null 2>&1; then
+    elif [ -z "$running" ]; then
                                  echo " Next:  ./kiln.sh start    serve a model to Cursor"
     else                         echo " Server is up. Point Cursor at the URL it printed."
     fi
@@ -355,13 +373,14 @@ case "$CMD" in
         exec "$START"
         ;;
     stop)
-        pkill -x llama-server 2>/dev/null && echo " stopped llama-server" || echo " llama-server was not running"
-        # Only kiln's own tunnel: other cloudflared processes, such as
-        # a named tunnel or T3 Code's remote access, are left running.
+        # Only kiln's own server and tunnel, on the port the start script
+        # serves. Another llama-server, a named tunnel or T3 Code's remote
+        # access are left running.
+        port="$(server_port)"
+        kiln_stop_server "$port" && echo " stopped llama-server" || echo " llama-server was not running"
         # shellcheck source=scripts/unix/lib_tunnel.sh
         . "$UNIX/lib_tunnel.sh"
-        port="$(sed -n 's/^PORT=\([0-9][0-9]*\)$/\1/p' "$START" 2>/dev/null | head -1)"
-        kiln_stop_tunnel "${port:-8080}" && echo " stopped cloudflared" || true
+        kiln_stop_tunnel "$port" && echo " stopped cloudflared" || true
         ;;
     key)
         [ "$ARG" = rotate ] && rm -f ./api_key.txt

@@ -277,6 +277,9 @@ def shared_files():
 # and must not make a stale log's URL look live. The same rule as
 # scripts/unix/lib_tunnel.sh and scripts/windows/kiln_tunnel.ps1.
 TUNNEL_ARGS = r"tunnel .*--url http://(localhost|127\.0\.0\.1):%d( |$)"
+# The same rule for llama-server: kiln's is the one serving kiln's port,
+# as scripts/unix/lib_server.sh finds it.
+SERVER_ARGS = r"llama-server.* --port %d( |$)"
 
 
 def processes(plat, port):
@@ -294,8 +297,15 @@ def processes(plat, port):
             tunnel = proc is not None and proc.returncode == 0
         return '"llama-server.exe"' in out, tunnel
 
-    proc = _run(["pgrep", "-x", "llama-server"])
-    llama = proc is not None and proc.returncode == 0
+    llama = False
+    proc = _run(["pgrep", "-f", SERVER_ARGS % port])
+    if proc is not None and proc.returncode == 0:
+        # As for the tunnel below: pgrep -f matches the command line, and
+        # ps names the program.
+        for pid in proc.stdout.split():
+            comm = _output(_run(["ps", "-o", "comm=", "-p", pid])).strip()
+            if os.path.basename(comm) == "llama-server":
+                llama = True
     tunnel = False
     proc = _run(["pgrep", "-f", TUNNEL_ARGS % port])
     if proc is not None and proc.returncode == 0:
