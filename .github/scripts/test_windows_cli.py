@@ -47,11 +47,6 @@ KEYS = [
     "all ! ^ ' & > < | % spaces",
 ]
 
-# The root shim passes its arguments through `call`, which reads a percent
-# sign or a caret a second time. Keys holding either cannot pass through it
-# yet; scripts\windows\kiln.bat, the real CLI, takes every key.
-ROOT_KEYS = [k for k in KEYS if "%" not in k and "^" not in k]
-
 BATCH_FILES = [("kiln.bat",)] + [
     ("scripts", "windows", f)
     for f in sorted(os.listdir(os.path.join(ROOT, "scripts", "windows")))
@@ -120,15 +115,34 @@ class StaticChecks(unittest.TestCase):
         self.assertIn('kiln key set "MY-SECRET"', read("README.md"))
 
     def test_path_guard_runs_before_anything_reads_the_path(self):
-        guard = 'findstr /L "! %%"'
-        root = read("kiln.bat")
-        self.assertIn(guard, root)
-        self.assertIn('call "%~dp0scripts\\windows\\kiln.bat"', root)
-        self.assertLess(root.index(guard), root.index('call "%~dp0scripts\\windows\\kiln.bat"'))
+        guard = 'findstr /L "! %% [ ]"'
         inner = read("scripts", "windows", "kiln.bat")
         self.assertIn(guard, inner)
         self.assertIn("setlocal enabledelayedexpansion", inner)
         self.assertLess(inner.index(guard), inner.index("setlocal enabledelayedexpansion"))
+
+    def test_root_shim_runs_the_cli_as_its_last_line_with_no_call(self):
+        # call re-reads % and ^ in the arguments, and returns to this file.
+        lines = [l for l in read("kiln.bat").split("\n")
+                 if l.strip() and not l.startswith("::")]
+        self.assertEqual(lines[-1], '"%~dp0scripts\\windows\\kiln.bat" %*')
+        self.assertNotIn("call", " ".join(lines).lower())
+
+    def test_status_powershell_takes_its_paths_from_the_environment(self):
+        text = read("scripts", "windows", "kiln.bat")
+        self.assertNotIn("(Get-PSDrive C)", text)
+        self.assertNotIn("'%CF_LOG%'", text)
+        self.assertIn("-LiteralPath $env:KILN_PS_FILE", text)
+        # A caret inside the quotes reaches PowerShell as a literal ^ and
+        # stops the pipeline with a parse error, so the URL row never showed.
+        self.assertNotIn("^| Select-Object", text)
+
+    def test_kiln_path_shim_chains_and_doubles_percent_signs(self):
+        # kiln path writes a kiln.cmd that chains to kiln.bat without call,
+        # so a percent sign in the checkout path has to be doubled there.
+        ps1 = read("scripts", "windows", "kiln_path.ps1")
+        self.assertIn('.Replace("%", "%%")', ps1)
+        self.assertIn('"`"$target`" %*', ps1)
 
 
 @unittest.skipUnless(WIN, "runs the batch files under cmd.exe")
@@ -151,12 +165,60 @@ class FrontDoor(unittest.TestCase):
                 fh.write(body)
         return dst
 
-    def run_kiln(self, target, tail):
-        """Run `target` the way a user types it at a prompt, through cmd /c."""
-        line = 'cmd.exe /d /c ""%s" %s"' % (target, tail)
+    def run_line(self, line):
+        """Run a command line the way control.py's Job does: stdin from NUL,
+        output captured, the same environment kiln tui gives it."""
         p = subprocess.run(line, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, env=ENV, timeout=180)
         return Result(p.returncode, p.stdout.decode("latin-1"))
+
+    def run_kiln(self, target, tail):
+        """Run `target` the way a user types it at a prompt, through cmd /c."""
+        args = " " + tail if tail else ""
+        return self.run_line('cmd.exe /d /c ""%s"%s"' % (target, args))
+
+    def shim_for(self, root_kiln):
+        """Write a kiln.cmd the way kiln path does, into a temporary folder
+        so nothing on the real PATH is touched. Returns its path."""
+        shim = os.path.join(tempfile.mkdtemp(dir=self.tmp), "kiln.cmd")
+        target = root_kiln.replace("%", "%%")
+        with open(shim, "w", newline="\r\n") as fh:
+            fh.write('@echo off\n"%s" %%*\n' % target)
+        return shim
+
+    def test_root_shim_passes_the_exit_code_as_control_runs_it(self):
+        # Control.command() builds /s /c with only the outer quotes stripped.
+        root = os.path.join(self.checkout(), "kiln.bat")
+        for tail, want in (("help", 0), ("bogus", 1), ("get nosuchvariant", 1)):
+            with self.subTest(tail=tail):
+                p = self.run_line('cmd.exe /d /s /c ""%s" %s"' % (root, tail))
+                self.assertEqual(p.returncode, want, p.out)
+                p = self.run_kiln(root, tail)
+                self.assertEqual(p.returncode, want, p.out)
+
+    def test_bare_kiln_without_a_terminal_shows_the_status_board(self):
+        # The TUI needs a terminal. With stdin from NUL kiln prints the board
+        # and returns; it must not wait for a key.
+        root = os.path.join(self.checkout(), "kiln.bat")
+        p = self.run_kiln(root, "")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("llama.cpp", p.out)
+
+    def test_kiln_cmd_on_path_chains_to_the_checkout(self):
+        dst = self.checkout(name="ok")
+        shim = self.shim_for(os.path.join(dst, "kiln.bat"))
+        p = self.run_kiln(shim, "bogus")
+        self.assertEqual(p.returncode, 1, p.out)
+        self.assertIn("Unknown command: bogus", p.out)
+        p = self.run_kiln(shim, 'key set "pct%here"')
+        self.assertEqual(p.returncode, 0, p.out)
+        with open(os.path.join(dst, "api_key.txt"), "rb") as fh:
+            self.assertTrue(fh.read() == b"pct%here", "key was not stored exactly as typed")
+
+        dst = self.checkout(name="a%b")
+        p = self.run_kiln(self.shim_for(os.path.join(dst, "kiln.bat")), "help")
+        self.assertEqual(p.returncode, 1, p.out)
+        self.assertIn("cannot run from a folder", p.out)
 
     def test_unknown_variant_is_refused_before_anything_is_fetched(self):
         dst = self.checkout()
@@ -207,8 +269,8 @@ class FrontDoor(unittest.TestCase):
         self.assertIn("quality", good.out)
 
     def test_key_set_stores_the_key_exactly_as_typed(self):
-        for via_root, keys in ((False, KEYS), (True, ROOT_KEYS)):
-            for i, key in enumerate(keys):
+        for via_root in (False, True):
+            for i, key in enumerate(KEYS):
                 with self.subTest(root=via_root, key=i):
                     dst = self.checkout()
                     path = os.path.join(dst, "api_key.txt")
@@ -238,24 +300,34 @@ class FrontDoor(unittest.TestCase):
                 self.assertIn(want, p.out)
                 self.assertFalse(os.path.exists(os.path.join(dst, "api_key.txt")))
 
-    def test_a_bang_or_a_percent_sign_in_the_folder_is_refused(self):
-        for name in ("a!b", "a%b"):
+    def test_a_bang_percent_or_bracket_in_the_folder_is_refused(self):
+        for name in ("a!b", "a%b", "a[1]b"):
             with self.subTest(folder=name):
                 dst = self.checkout(name=name)
                 for target in (os.path.join(dst, "kiln.bat"),
                                os.path.join(dst, "scripts", "windows", "kiln.bat")):
                     p = self.run_kiln(target, "help")
                     self.assertEqual(p.returncode, 1, p.out)
-                    self.assertIn("cannot run from a folder", p.out)
+                    self.assertIn("contains ! or % or [ or ].", p.out)
 
     def test_a_plain_folder_still_runs(self):
-        dst = self.checkout(name="ok")
-        for target in (os.path.join(dst, "kiln.bat"),
-                       os.path.join(dst, "scripts", "windows", "kiln.bat")):
-            p = self.run_kiln(target, "help")
-            self.assertEqual(p.returncode, 0, p.out)
-            self.assertIn("Usage:", p.out)
-            self.assertNotIn("cannot run from a folder", p.out)
+        # An apostrophe is fine; only ! % [ and ] are refused.
+        for name in ("ok", "a'b"):
+            with self.subTest(folder=name):
+                dst = self.checkout(name=name)
+                for target in (os.path.join(dst, "kiln.bat"),
+                               os.path.join(dst, "scripts", "windows", "kiln.bat")):
+                    p = self.run_kiln(target, "help")
+                    self.assertEqual(p.returncode, 0, p.out)
+                    self.assertIn("Usage:", p.out)
+                    self.assertNotIn("cannot run from a folder", p.out)
+
+    def test_status_board_names_the_drive_the_checkout_is_on(self):
+        root = os.path.join(self.checkout(), "kiln.bat")
+        drive = os.path.splitdrive(root)[0].upper()
+        p = self.run_kiln(root, "status")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("ON " + drive, p.out.upper())
 
 
 if __name__ == "__main__":

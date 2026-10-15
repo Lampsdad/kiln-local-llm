@@ -13,21 +13,11 @@
 ::    kiln start      serve a model to Cursor
 ::    kiln help       every command
 ::
-::  The call and the exit share a line on purpose: kiln self-update
-::  can rewrite this file while it runs, and cmd reads a batch file
-::  one line at a time from a byte offset. The exit needs an explicit
-::  code, because a bare exit /b leaves cmd /c exiting 0. The call in
-::  front of it delays reading errorlevel until the CLI has returned.
+::  The CLI runs as the last line of this file, with no call. call
+::  would read a percent sign or a caret in the arguments a second
+::  time, so kiln key set with one in the key wrote a different key.
+::  Without call, cmd hands control to the CLI and never comes back
+::  here, so a kiln self-update that rewrites this file mid-run is
+::  harmless, and the exit code is the one the CLI returns.
 :: ============================================================
-:: This check is repeated here: the call below re-reads a percent
-:: sign in the path before scripts\windows\kiln.bat could refuse it.
-echo "%~dp0"| findstr /L "! %%" >nul
-if errorlevel 1 goto :path_ok
-echo.
-echo  kiln cannot run from a folder whose path contains ! or %%.
-echo    "%~dp0"
-echo  Move or rename the folder, then run kiln again.
-echo.
-exit /b 1
-:path_ok
-call "%~dp0scripts\windows\kiln.bat" %* & call exit /b %%errorlevel%%
+"%~dp0scripts\windows\kiln.bat" %*

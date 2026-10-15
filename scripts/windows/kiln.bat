@@ -1,12 +1,13 @@
 @echo off
-:: A folder name with an exclamation mark or a percent sign breaks
-:: this script: cmd strips the first from every path once delayed
-:: expansion is on, and reads the second again on every call. Refuse
-:: it here, before any path is used.
-echo "%~dp0"| findstr /L "! %%" >nul
+:: A folder name with an exclamation mark, a percent sign or a square
+:: bracket breaks this script: cmd strips the first from every path once
+:: delayed expansion is on, call reads the second again, and PowerShell
+:: resolves relative paths from the wrong folder when there is a bracket.
+:: Refuse it here, before any path is used.
+echo "%~dp0"| findstr /L "! %% [ ]" >nul
 if errorlevel 1 goto :path_ok
 echo.
-echo  kiln cannot run from a folder whose path contains ! or %%.
+echo  kiln cannot run from a folder whose path contains ! or %% or [ or ].
 echo    "%~dp0"
 echo  Move or rename the folder, then run kiln again.
 echo.
@@ -255,8 +256,11 @@ if defined KILN_VERSION set "ST_KILN_S=%C_HL%!KILN_VERSION!%C_0%"
 if defined KILN_UPDATE set "ST_KILN_S=!ST_KILN_S!  %C_WARN%!KILN_UPDATE! available%C_0%  %C_MU%kiln self-update%C_0%"
 
 :: ---- disk ----
+:: The drive the checkout is on, not always C:. Only the drive letter
+:: goes to PowerShell, and it goes in the environment.
 set "ST_FREE_S=%C_MU%unknown%C_0%"
-for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "[math]::Round((Get-PSDrive C).Free/1GB,0)"`) do set "ST_FREE_S=%C_HL%%%F GB%C_0%"
+set "KILN_DRIVE=%CD:~0,2%"
+for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "[math]::Round((Get-PSDrive -Name $env:KILN_DRIVE.Substring(0,1)).Free/1GB,0)"`) do set "ST_FREE_S=%C_HL%%%F GB%C_0%  %C_MU%on %KILN_DRIVE%%C_0%"
 
 :: ---- weights ----
 call :probe base  Q_BASE
@@ -318,9 +322,12 @@ if exist "api_key.txt" (
 )
 
 :: ---- tunnel: only meaningful while a server is up ----
+:: The log's path goes in the environment and PowerShell reads it
+:: literally, so no character in it can end a string or match a wildcard.
 set "ST_URL_S=%C_MU%none%C_0%"
+set "KILN_PS_FILE=%CD%\%CF_LOG%"
 if "%ST_RUN%"=="1" if exist "%CF_LOG%" (
-    for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "(Select-String -Path '%CF_LOG%' -Pattern 'https://\S+trycloudflare\.com').Matches.Value ^| Select-Object -Last 1"`) do set "ST_URL_S=%C_HL%%%U/v1%C_0%"
+    for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "(Select-String -LiteralPath $env:KILN_PS_FILE -Pattern 'https://\S+trycloudflare\.com').Matches.Value | Select-Object -Last 1"`) do set "ST_URL_S=%C_HL%%%U/v1%C_0%"
 )
 
 :: ---- the one thing to do next ----
@@ -418,9 +425,8 @@ call :step "Upgrading llama.cpp"
 call "%~dp0update.bat"
 exit /b %errorlevel%
 
-:: The exit stays out of any if-block: errorlevel read inside a block
-:: is taken when the block is parsed, before the call has run, so the
-:: exit always said 0. Each line is read on its own, so these are not.
+:: The exit stays out of any if-block: errorlevel inside a block is read
+:: when the block is parsed, before the call runs.
 :cmd_get
 if /I "%ARG%"=="both" goto :get_both
 if not defined ARG goto :get_default
