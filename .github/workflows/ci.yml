@@ -9,13 +9,26 @@ on:
 permissions:
   contents: read
 
+# A newer push to a branch cancels the run it supersedes. main is left
+# alone, so every commit that lands there gets a complete run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Third-party actions are pinned to the commit behind each tag, so a tag
+# that moves cannot change what runs here. To update one, look up the
+# new tag's commit and replace the SHA and the # comment together.
+
 jobs:
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4, pinned to its commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Every .sh must parse. bash -n reads a script without running it.
       - name: Syntax check every shell script
         run: |
           status=0
@@ -29,6 +42,8 @@ jobs:
           done < <(git ls-files '*.sh')
           exit $status
 
+      # Lints every .sh at error severity. shellcheck comes from apt, so its
+      # version is whatever Ubuntu ships.
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
@@ -37,90 +52,100 @@ jobs:
           shellcheck --severity=error --external-sources $(git ls-files '*.sh')
 
   python:
-    name: Python scripts
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each OS runs the tests on its own. Windows also runs the .bat
+        # front door, and macOS runs the shell libraries under the system
+        # bash 3.2.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12"]
+        include:
+          # 3.8 is the oldest Python the scripts promise. It runs on 22.04
+          # because that is the runner image setup-python ships it for.
+          - os: ubuntu-22.04
+            python: "3.8"
+          # A current Python, so a release that breaks the scripts shows up.
+          - os: ubuntu-latest
+            python: "3.13"
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4, pinned to its commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Byte-compile every Python script
-        run: python3 -m py_compile $(git ls-files '*.py')
-
-      # hardware.py is the model registry every launch reads; these pin
-      # that families never share a file in models/, that Gemma stays
-      # opt-in, and the context numbers the docs quote.
-      - name: hardware registry
-        run: python3 .github/scripts/test_hardware.py
-
-      # kiln opencode edits a config file other tools depend on; these
-      # pin that it refuses rather than writing something broken.
-      - name: kiln opencode
-        run: python3 .github/scripts/test_opencode.py
-
-      # kiln pi edits pi's models.json, which pi rejects whole when any
-      # part breaks its schema; these check every write against it.
-      - name: kiln pi
-        run: python3 .github/scripts/test_pi.py
-
-      # Linux and WSL setup pick a llama.cpp build from nvidia-smi; these
-      # pin that an NVIDIA card gets CUDA under both header wordings.
-      - name: llama.cpp build choice
-        run: python3 .github/scripts/test_nvidia_smi.py
-
-      # kiln self-update rewrites the user's checkout; these pin that it
-      # refuses rather than discard a local edit or a local commit.
-      - name: kiln self-update
-        run: python3 .github/scripts/test_selfupdate.py
-
-      # kiln tui and the benchmark run kiln verbs; these pin that only
-      # the fixed table reaches a command line, and that a benchmark
-      # never opens a tunnel and always frees the GPU.
-      - name: control
-        run: python3 .github/scripts/test_control.py
-
-      # kiln stop used to pkill every cloudflared; these pin that it
-      # stops only the quick tunnel to kiln's own port.
-      - name: kiln's own tunnel
-        run: python3 .github/scripts/test_tunnel.py
-
-      - name: benchmark
-        run: python3 .github/scripts/test_bench.py
-
-      # kiln path writes into ~/.local/bin; these pin that it never
-      # replaces or deletes a kiln some other tool put there.
-      - name: kiln path
-        run: python3 .github/scripts/test_path.py
-
-      # Every Unix setup fetches llama.cpp through lib_llama_bin.sh; these
-      # pin that it takes a bNNNN build for the right platform, never
-      # /releases/latest, and that a Mac gets Metal only on Apple Silicon.
-      - name: llama.cpp download
-        run: python3 .github/scripts/test_llama_bin.py
-
-  tui:
-    name: kiln tui
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Not the runner's system Python: PEP 668 refuses a pip install
-      # into it, which is also why kiln tui keeps Textual in a venv.
-      - uses: actions/setup-python@v5
+      # actions/setup-python v5, pinned to its commit. This is not the
+      # runner's system Python: PEP 668 refuses a pip install into it,
+      # which is also why kiln tui keeps Textual in a venv.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
+      # Shows which bash the shell tests get on macOS, so the log proves
+      # they run under the system bash 3.2 and not a newer one from PATH.
+      - name: Which bash the shell tests run under
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          command -v bash
+          bash --version | head -1
+
+      # Textual is what kiln tui runs on. It is installed at the version
+      # tui.py asks for, so the TUI tests exercise the real app. Not on
+      # 3.8: tui.py refuses anything older than 3.9.
       - name: Install Textual, at the version tui.py asks for
+        if: matrix.python != '3.8'
+        shell: bash
         run: |
           req=$(python -c "import sys; sys.path.insert(0, 'scripts'); import tui; print(tui.REQUIREMENT)")
           python -m pip install "$req"
 
-      - name: kiln tui
-        run: python .github/scripts/test_tui.py
+      # Every script must still compile under this Python. On 3.8 this is
+      # the check that holds the scripts to the syntax they promise.
+      - name: Byte-compile every Python script
+        shell: bash
+        run: python -m py_compile $(git ls-files '*.py')
+
+      # Runs every .github/scripts/test_*.py, so a new test file cannot be
+      # left out. What each file pins is in its docstring. KILN_REQUIRE_TEXTUAL
+      # makes test_tui fail when Textual will not import, instead of skipping
+      # the app tests; it is set wherever Textual is installed.
+      - name: Run every test file
+        shell: bash
+        env:
+          KILN_REQUIRE_TEXTUAL: ${{ matrix.python != '3.8' && '1' || '0' }}
+        run: python .github/scripts/run_tests.py
+
+      # kiln.bat is the Windows front door. These run it from cmd.exe the way
+      # a Windows user does, through the root kiln.bat. The runner has no GPU,
+      # llama.cpp or cloudflared, so status must say so and still exit 0.
+      # stdin is NUL so nothing waits for a key; the step timeout catches a hang.
+      - name: kiln.bat help exits 0
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 5
+        run: |
+          kiln.bat help < NUL
+          if errorlevel 1 exit /b 1
+
+      - name: kiln.bat status runs with no GPU
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 5
+        run: |
+          kiln.bat status < NUL > "%RUNNER_TEMP%\status.txt" 2>&1
+          if errorlevel 1 (type "%RUNNER_TEMP%\status.txt" & exit /b 1)
+          findstr /C:"GPU" "%RUNNER_TEMP%\status.txt" >NUL || (type "%RUNNER_TEMP%\status.txt" & echo kiln.bat status printed no board & exit /b 1)
+          type "%RUNNER_TEMP%\status.txt"
 
   line-endings:
     name: Line endings
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4, pinned to its commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # A .sh checked out with CRLF dies on Linux with "\r: command not
       # found"; a .bat with LF can misbehave under cmd.exe. .gitattributes
@@ -146,17 +171,24 @@ jobs:
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4, pinned to its commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # Weights, binaries, logs and the generated key must never be
-      # committed. .gitignore covers them; this catches a `git add -f`.
+      # Weights, binaries, logs, the generated key and the tunnel URL must
+      # never be committed. .gitignore covers them; this catches a
+      # `git add -f`. The */ forms catch a copy in a subdirectory: in a
+      # case pattern * also matches /, so the bare forms only reach the root.
       - name: No secrets, weights, binaries or logs are tracked
         run: |
           status=0
           while IFS= read -r f; do
             case "$f" in
-              api_key.txt|*.gguf|*.dat|*.log|*.exe|*.dll|*.zip|llama-bin/*|models/*)
+              api_key.txt|*/api_key.txt|cloudflared.url|*/cloudflared.url|\
+              *.gguf|*.dat|*.log|*.exe|*.dll|*.so|*.dylib|*.zip|\
+              llama-bin/*|*/llama-bin/*|models/*|*/models/*|\
+              .kiln/*|*/.kiln/*)
                 echo "FAIL $f must not be tracked"
                 status=1
                 ;;
@@ -165,22 +197,37 @@ jobs:
           if [ $status -eq 0 ]; then echo "Nothing forbidden is tracked"; fi
           exit $status
 
+      # cmd.exe reads a stray BEL or backspace as part of a path, so a bad
+      # escape fails at runtime. check_control_chars.py finds one before that.
       - name: No stray control characters in scripts
         run: python3 .github/scripts/check_control_chars.py
 
       # Catches docs that still tell users to run a renamed or deleted
-      # script. Compared by basename so \ and / both work.
+      # script. Compared by basename so \ and / both work. shell: bash
+      # sets pipefail, so a doc that cannot be read fails this step, and
+      # an empty list of script names fails it too.
       - name: Every script named in the docs exists
+        shell: bash
         run: |
           git ls-files '*.bat' '*.sh' '*.ps1' | xargs -n1 basename | sort -u > /tmp/have
+          if [ ! -s /tmp/have ]; then
+            echo "FAIL no .bat, .sh or .ps1 is tracked, so there is nothing to check against"
+            exit 1
+          fi
           # URLs are stripped first so img.shields.io does not read as a
           # script named img.sh; foo.bat is CONTRIBUTING's placeholder.
           # CHANGELOG.md is excluded: it names the files it removed.
+          # Each grep is wrapped so that finding nothing is not an error;
+          # the empty-list check below reports that case instead.
           cat README.md CONTRIBUTING.md SECURITY.md NOTES.md \
             | sed 's|https[^ )]*||g' \
-            | grep -oE '[A-Za-z0-9_.-]+[.](bat|sh|ps1)' \
-            | grep -vxE 'foo[.]bat|dp0foo[.]bat' \
+            | { grep -oE '[A-Za-z0-9_.-]+[.](bat|sh|ps1)' || true; } \
+            | { grep -vxE 'foo[.]bat|dp0foo[.]bat' || true; } \
             | sort -u > /tmp/want
+          if [ ! -s /tmp/want ]; then
+            echo "FAIL the docs name no scripts at all, so the check proved nothing"
+            exit 1
+          fi
           missing=$(comm -13 /tmp/have /tmp/want || true)
           if [ -n "$missing" ]; then
             echo "FAIL docs reference scripts that do not exist:"
