@@ -40,7 +40,9 @@ kiln_model_args "$BINARY"
 # ── stop any running instances ───────────────────────────────
 echo "Stopping any existing instances..."
 pkill -x llama-server 2>/dev/null || true
-pkill -x cloudflared  2>/dev/null || true
+# Only the tunnel to this port: other cloudflared processes are not ours.
+. "$SCRIPT_DIR/lib_tunnel.sh"
+kiln_stop_tunnel "$PORT" || true
 sleep 1
 
 # ── start llama-server ───────────────────────────────────────

@@ -829,6 +829,7 @@ NOTES.md               why the tuned constants are what they are
 | `lib_variants.bat` | Resolves a build to its repo, filename prefix, Cursor alias, MTP head, projector and launch flags. Reads the registry from `hardware.py`. |
 | `lib_api_key.bat` | Generates the API key, locks the file to your account, hands back `API_KEY`. |
 | `lib_ui.bat` | ANSI palette for the CLI. Degrades to empty strings under `NO_COLOR`. |
+| `kiln_tunnel.ps1` | Finds or stops kiln's own Cloudflare tunnel, the one forwarding to kiln's port, and no other `cloudflared.exe`. Behind `kiln stop` and `start.bat`. |
 | `kiln_path.ps1` | Puts `kiln` on PATH: a `kiln.cmd` shim in `%USERPROFILE%\.local\bin`, and that folder on the user PATH. Behind `kiln path` and `kiln setup`. |
 
 **Shared** (`scripts/`)
@@ -848,6 +849,7 @@ NOTES.md               why the tuned constants are what they are
 | Script | Purpose |
 |---|---|
 | `install_mac.sh` / `install_linux.sh` / `install_fedora.sh` | One-time setup, per platform. |
+| `lib_tunnel.sh` | Finds or stops kiln's own Cloudflare tunnel, the one forwarding to kiln's port, and no other `cloudflared`. Behind `kiln stop` and the start scripts. |
 | `kiln_path.sh` | Links `~/.local/bin/kiln` to this checkout's `kiln.sh`. Behind `kiln path` and the setup scripts. |
 | `download.sh` | Weights + MTP head + vision projector. `QUANT=` and `VARIANT=` override. |
 | `start_mac.sh` / `start_linux.sh` / `start_fedora.sh` | Tuned launchers. Context comes from `hardware.py`, falling back to `--fit on`. |

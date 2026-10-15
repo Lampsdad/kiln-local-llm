@@ -144,6 +144,7 @@ python3 .github/scripts/test_pi.py
 python3 .github/scripts/test_nvidia_smi.py
 python3 .github/scripts/test_selfupdate.py
 python3 .github/scripts/test_control.py
+python3 .github/scripts/test_tunnel.py
 python3 .github/scripts/test_bench.py
 python3 .github/scripts/test_path.py
 python3 .github/scripts/test_tui.py    # app tests need Textual installed

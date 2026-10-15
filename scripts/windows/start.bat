@@ -267,7 +267,9 @@ echo.
 :: ---- stop anything already running ----
 echo Stopping any existing instances...
 taskkill /F /IM llama-server.exe >nul 2>&1
-taskkill /F /IM cloudflared.exe  >nul 2>&1
+:: Only the tunnel to this port; other cloudflared.exe processes are
+:: not ours. See kiln_tunnel.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_tunnel.ps1" -Port %PORT% -Stop >nul 2>&1
 call :sleep 2
 
 del "%LOG%"    >nul 2>&1
