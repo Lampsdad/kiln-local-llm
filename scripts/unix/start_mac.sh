@@ -50,10 +50,15 @@ sleep 1
 # memory, which is roughly what Metal's
 # recommendedMaxWorkingSetSize hands a single process -- --fit
 # alone sees the whole pool and can be optimistic about it.
+#
+# ${A[@]+"${A[@]}"}, not "${A[@]}": macOS runs this with bash 3.2,
+# where an empty array counts as unset under set -u and the launch
+# dies. Before lib_select.sh added the sampling flags, EXTRA was
+# empty for any model without an MTP head or projector.
 echo "Starting llama-server (Metal)..."
 "$BINARY" \
     --model        "$MODEL" \
-    "${FIT_ARGS[@]}" \
+    ${FIT_ARGS[@]+"${FIT_ARGS[@]}"} \
     --n-gpu-layers 99 \
     --flash-attn   auto \
     --cache-type-k q8_0 \
@@ -65,7 +70,7 @@ echo "Starting llama-server (Metal)..."
     --host         0.0.0.0 \
     --alias        "$V_ALIAS" \
     --api-key-file "$API_KEY_FILE" \
-    "${EXTRA[@]}" \
+    ${EXTRA[@]+"${EXTRA[@]}"} \
     --log-file     "$LOG" &
 SERVER_PID=$!
 

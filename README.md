@@ -939,7 +939,9 @@ list of cmd.exe traps already found the hard way.
 ## Requirements
 
 **Windows:** Windows 10/11, NVIDIA GPU with a CUDA 13 driver, Python 3.8+.
-**macOS:** macOS 12+, Apple Silicon or Intel (Metal), Python 3.8+, `curl`, `unzip`.
+**macOS:** macOS 13.3+, which llama.cpp's builds require. Apple Silicon runs on
+Metal. Intel runs on the CPU: llama.cpp's Intel build has no Metal. Python 3.8+
+(the Xcode Command Line Tools include one), `curl`.
 **Linux:** NVIDIA driver with `nvidia-smi`, Python 3.8+, `curl`, `unzip`.
 
 Disk: 20–30 GB per quant, plus ~4 GB for the MTP head and vision

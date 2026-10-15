@@ -85,6 +85,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The Windows status board shows the llama.cpp build again.** Newer
   builds print `version: 0.6.0-dev (build 11624, ...)`, and the board
   showed `build 0.6.0-dev`.
+- **macOS setup downloads llama.cpp again.** `install_mac.sh` read
+  `/releases/latest`, which is now the v0.x line with no binaries, and
+  wanted a `.zip` where the Mac builds are now `.tar.gz`. It found
+  nothing and exited without a message. It now uses the same bNNNN
+  lookup as Linux and Fedora. Apple Silicon gets the Metal build, also
+  from a shell running under Rosetta. Intel gets the x64 build, which
+  llama.cpp compiles without Metal, so it runs on the CPU. Homebrew
+  installs cloudflared from homebrew-core, where Cloudflare's tap moved
+  it, and the direct download creates `/usr/local/bin` when it is
+  missing. The README now asks for macOS 13.3, the oldest release those
+  builds load on.
+- **`kiln start` on macOS with the 9B or 4B.** macOS runs the start
+  script with its stock bash 3.2, which treats an empty array as unset
+  under `set -u`. A model with no MTP head and no projector left the
+  extra flags empty, and the launch died with `EXTRA[@]: unbound
+  variable`. The sampling flags now always fill that list, and
+  `start_mac.sh` expands both of its arrays in a form bash 3.2 accepts
+  when one is empty.
 
 ## [1.1.0] — 2026-10-01
 

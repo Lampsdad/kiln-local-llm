@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 ARCH=$(uname -m)   # arm64 = Apple Silicon, x86_64 = Intel
+# A shell running under Rosetta says x86_64 on Apple Silicon too,
+# which would pick the Intel build and lose Metal.
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+    ARCH=arm64
+fi
 
 echo "============================================================"
 echo " Local Model Runtime - macOS Install (Metal)"
@@ -11,51 +17,19 @@ echo "============================================================"
 echo
 
 # ── llama-bin ────────────────────────────────────────────────
-if [ -f "llama-bin/llama-server" ]; then
-    echo "[OK] llama-bin/ already populated, skipping download."
-else
-    echo "[*] Fetching latest llama.cpp release from GitHub..."
-    mkdir -p llama-bin
-
-    if [ "$ARCH" = "arm64" ]; then
-        ARCH_PAT="macos.*arm64|darwin.*arm64"
-    else
-        ARCH_PAT="macos.*x64|darwin.*x64|macos.*x86_64"
-    fi
-
-    ASSET_URL=$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
-        | python3 -c "
-import sys, json, re
-rel = json.load(sys.stdin)
-pat = r'$ARCH_PAT'
-for a in rel['assets']:
-    if re.search(pat, a['name'], re.IGNORECASE) and a['name'].endswith('.zip'):
-        print(a['browser_download_url']); sys.exit(0)
-print('NOT_FOUND'); sys.exit(1)
-")
-
-    if [ "$ASSET_URL" = "NOT_FOUND" ]; then
-        echo "ERROR: Could not find a macOS $ARCH asset in the latest release."
-        echo "Download manually from: https://github.com/ggml-org/llama.cpp/releases/latest"
-        echo "Extract into llama-bin/"
-        exit 1
-    fi
-
-    FILENAME=$(basename "$ASSET_URL")
-    echo "Downloading $FILENAME..."
-    curl -fL "$ASSET_URL" -o "llama-bin/$FILENAME"
-    unzip -q "llama-bin/$FILENAME" -d llama-bin
-    rm "llama-bin/$FILENAME"
-    chmod +x llama-bin/llama-server llama-bin/llama-cli 2>/dev/null || true
-    echo "[OK] llama.cpp binaries extracted."
-fi
+# The tag lookup is shared with Linux and Fedora: /releases/latest
+# no longer ships binaries, and the Mac builds are now .tar.gz.
+# shellcheck source=lib_llama_bin.sh
+. "$SCRIPT_DIR/lib_llama_bin.sh"
+kiln_install_llama_bin macos "$ARCH"
 
 # ── cloudflared ──────────────────────────────────────────────
 if command -v cloudflared &>/dev/null; then
     echo "[OK] cloudflared already installed."
 elif command -v brew &>/dev/null; then
+    # homebrew-core has it. Cloudflare's own tap moved it there.
     echo "[*] Installing cloudflared via Homebrew..."
-    brew install cloudflare/cloudflare/cloudflared
+    brew install cloudflared
     echo "[OK] cloudflared installed."
 else
     echo "[*] Installing cloudflared (direct download)..."
@@ -65,6 +39,8 @@ else
     else
         CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz"
     fi
+    # A new Apple Silicon Mac may not have /usr/local/bin yet.
+    sudo mkdir -p /usr/local/bin
     curl -fsSL "$CF_URL" | sudo tar -xz -C /usr/local/bin cloudflared
     sudo chmod +x "$CF_BIN"
     echo "[OK] cloudflared installed to $CF_BIN"
@@ -89,4 +65,8 @@ if [ "$ARCH" = "arm64" ]; then
     echo
     echo "NOTE: On Apple Silicon, models run in unified memory (shared RAM/GPU)."
     echo "      A 30 GB model requires a Mac with at least 36 GB of memory."
+else
+    echo
+    echo "NOTE: llama.cpp's Intel macOS build has no Metal backend, so models"
+    echo "      run on the CPU."
 fi
