@@ -20,8 +20,8 @@ echo ============================================================
 echo.
 
 for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command ^
-    "[math]::Round((Get-PSDrive C).Free/1GB,1)"`) do set FREE=%%F
-echo  Free space on C: : %FREE% GB
+    "[math]::Round((Get-Location).Drive.Free/1GB,1)"`) do set FREE=%%F
+echo  Free space on %~d0 : %FREE% GB
 echo.
 echo  Candidates for deletion (superseded by Qwen3.8-27B):
 echo.
@@ -71,9 +71,9 @@ if exist "server.log" (
 
 echo.
 for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command ^
-    "[math]::Round((Get-PSDrive C).Free/1GB,1)"`) do set FREE2=%%F
+    "[math]::Round((Get-Location).Drive.Free/1GB,1)"`) do set FREE2=%%F
 echo ============================================================
-echo  Free space on C: : %FREE2% GB  ^(was %FREE% GB^)
+echo  Free space on %~d0 : %FREE2% GB  ^(was %FREE% GB^)
 echo.
 echo  Next: kiln get
 echo ============================================================
