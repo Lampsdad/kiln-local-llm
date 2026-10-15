@@ -266,7 +266,9 @@ echo.
 
 :: ---- stop anything already running ----
 echo Stopping any existing instances...
-taskkill /F /IM llama-server.exe >nul 2>&1
+:: Only the server on this port. Other llama-server.exe processes are
+:: not ours. See kiln_server.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port %PORT% -Stop >nul 2>&1
 :: Only the tunnel to this port; other cloudflared.exe processes are
 :: not ours. See kiln_tunnel.ps1.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_tunnel.ps1" -Port %PORT% -Stop >nul 2>&1
@@ -363,7 +365,9 @@ if not errorlevel 1 goto ready
 :: grepping the log for "error" -- llama.cpp emits plenty of benign
 :: lines containing that word, and a false positive would abort a
 :: perfectly good startup.
-tasklist /FI "IMAGENAME eq llama-server.exe" 2>nul | findstr /I "llama-server.exe" >nul
+:: Only the server on this port counts, so another llama-server.exe
+:: running elsewhere cannot hide this one dying. See kiln_server.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port %PORT% >nul 2>&1
 if errorlevel 1 (
     echo.
     call :clearline
