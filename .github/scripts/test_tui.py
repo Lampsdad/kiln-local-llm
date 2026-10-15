@@ -37,6 +37,11 @@ except ImportError:
     HAVE_TEXTUAL = False
 
 
+class Terminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
 class Bootstrap(unittest.TestCase):
     def test_one_venv_per_platform_inside_the_checkout(self):
         self.assertTrue(tui.VENV.startswith(os.path.join(tui.ROOT, ".kiln")))
@@ -66,10 +71,6 @@ class Bootstrap(unittest.TestCase):
             open(tui.venv_python(), "w").close()
             return 1
 
-        class Terminal(io.StringIO):
-            def isatty(self):
-                return True
-
         with mock.patch.object(tui, "VENV", os.path.join(tmp.name, "v")), \
                 mock.patch.object(tui.subprocess, "call", call), \
                 mock.patch.object(sys, "stdin", Terminal()), \
@@ -77,6 +78,73 @@ class Bootstrap(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(tui.install())
             self.assertFalse(os.path.exists(tui.VENV))
+
+    def venv_on_disk(self, marker):
+        """A venv folder with a placeholder interpreter and a marker file,
+        so a test can tell whether it was removed. Returns its path."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        venv = os.path.join(tmp.name, "v")
+        with mock.patch.object(tui, "VENV", venv):
+            os.makedirs(os.path.dirname(tui.venv_python()))
+            open(tui.venv_python(), "w").close()
+        open(os.path.join(venv, marker), "w").close()
+        return venv
+
+    def test_a_venv_whose_python_no_longer_runs_is_made_again(self):
+        # Its base Python was upgraded or removed, so the venv's pip can
+        # never run. Reused, that fails on every run; made again, it works.
+        venv = self.venv_on_disk("old")
+        calls = []
+        new_python = os.path.join(venv, "new")
+
+        def call(argv, **kw):
+            calls.append(list(argv))
+            if "--version" in argv:
+                return 1
+            if "venv" in argv:
+                os.makedirs(os.path.dirname(tui.venv_python()))
+                open(tui.venv_python(), "w").close()
+                open(new_python, "w").close()
+            return 0
+
+        out = io.StringIO()
+        with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui.subprocess, "call", call), \
+                mock.patch.object(sys, "stdin", Terminal()), \
+                mock.patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(out):
+            self.assertTrue(tui.install())
+        self.assertFalse(os.path.exists(os.path.join(venv, "old")))
+        self.assertTrue(os.path.exists(new_python))
+        # Checked, then made again, then pip installs into the new one.
+        self.assertEqual([c[2] for c in calls], ["pip", "venv", "pip"])
+        self.assertIn("is broken, so it is being rebuilt", out.getvalue())
+
+    def test_a_venv_that_works_is_kept(self):
+        venv = self.venv_on_disk("kept")
+        calls = []
+
+        def call(argv, **kw):
+            calls.append(list(argv))
+            return 0
+
+        with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui.subprocess, "call", call), \
+                mock.patch.object(sys, "stdin", Terminal()), \
+                mock.patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(tui.install())
+        self.assertTrue(os.path.exists(os.path.join(venv, "kept")))
+        # Probed, then pip installs into it; nothing is created again.
+        self.assertIn("--version", calls[0])
+        self.assertEqual([c[2] for c in calls], ["pip", "pip"])
+
+    def test_a_python_that_cannot_start_is_not_ready(self):
+        # A file that is not a program, as a half-written venv can leave.
+        venv = self.venv_on_disk("x")
+        with mock.patch.object(tui, "VENV", venv):
+            self.assertFalse(tui.venv_ready())
 
     def test_requirement_matches_the_major_it_checks(self):
         self.assertIn(">=%d." % tui.MAJOR, tui.REQUIREMENT)

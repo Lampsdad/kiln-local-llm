@@ -64,14 +64,22 @@ def usable_here():
         return False
 
 
+def quiet_call(argv):
+    """Exit status of argv, or None when it cannot be started at all."""
+    try:
+        return subprocess.call(argv, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+
+
 def venv_ready():
     py = venv_python()
     if not os.path.isfile(py):
         return False
     probe = ("from importlib.metadata import version; import sys; "
              "sys.exit(int(version('textual').split('.')[0]) != %d)" % MAJOR)
-    return subprocess.call([py, "-c", probe], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL) == 0
+    return quiet_call([py, "-c", probe]) == 0
 
 
 def running_in_venv():
@@ -96,6 +104,14 @@ def install():
         return False
     if answer not in ("", "y", "yes"):
         return False
+
+    # A venv keeps the Python it was made from. If that Python was
+    # upgraded or removed, or a creation was interrupted, its pip can
+    # never run, and reusing the venv fails the same way on every run.
+    if os.path.lexists(VENV) and quiet_call(
+            [venv_python(), "-m", "pip", "--version"]) != 0:
+        print(" %s is broken, so it is being rebuilt ..." % rel)
+        shutil.rmtree(VENV, ignore_errors=True)
 
     if not os.path.isfile(venv_python()):
         print(" Creating %s ..." % rel)
