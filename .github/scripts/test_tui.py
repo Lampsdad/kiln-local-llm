@@ -257,6 +257,7 @@ class Job:
     action = "get"
     title = "Download"
     running = True
+    log_path = ""
 
     def cancel(self):
         say("cancelled")
