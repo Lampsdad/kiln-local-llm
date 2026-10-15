@@ -113,6 +113,8 @@ if [ -n "${KILN_NO_TUNNEL:-}" ] || ! command -v cloudflared &>/dev/null; then
     else
         echo "WARNING: cloudflared not found. Skipping tunnel."
     fi
+    # Cursor reaches the model only through a tunnel.
+    kiln_cursor_unfollow
     echo "The API is reachable at http://localhost:$PORT/v1"
     echo "API key: $API_KEY"
     echo "Press Ctrl+C to stop the server."
@@ -140,6 +142,10 @@ else
     echo "The API is reachable at http://localhost:$PORT/v1"
 fi
 fi
+# Cursor follows the tunnel once `kiln cursor` has been run here.
+if [ -f ./cloudflared.url ]; then
+    kiln_cursor_follow "$(cat ./cloudflared.url)"
+fi
 
 echo
 echo "============================================================"
@@ -149,6 +155,10 @@ echo "    $API_KEY"
 echo
 echo "  The tunnel URL is public. Requests without this key are"
 echo "  rejected."
+if [ ! -f .kiln/cursor.json ]; then
+    echo
+    echo "  \`kiln cursor\` sets Cursor up, and keeps it on each new tunnel."
+fi
 echo "============================================================"
 echo
 echo "Press Ctrl+C to stop everything."

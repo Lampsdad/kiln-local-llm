@@ -198,7 +198,7 @@ to do next:
  |_|\_\|_||_||_| |_|  local models, fired on your own GPU
 
  ------------------------------------------------------------
-  kiln           v1.1.0
+  kiln           v1.2.0
   llama.cpp      installed  build 9431
   MTP support    available
   cloudflared    installed
@@ -232,6 +232,7 @@ kiln start        :: pick a build and serve it
 kiln start ablit  :: skip the picker
 kiln stop         :: stop the server and the tunnel
 kiln key show     :: print the API key for Cursor
+kiln cursor       :: point Cursor at the model, and keep it there
 kiln opencode     :: list the local models in OpenCode
 kiln pi           :: list the local models in pi
 kiln bench        :: quant speed and throughput sweep
@@ -272,6 +273,7 @@ Fedora/RHEL and calls the right platform script for you:
 ./kiln.sh start ablit     # or the abliterated build
 ./kiln.sh stop
 ./kiln.sh key show
+./kiln.sh cursor          # point Cursor at the model, and keep it there
 ./kiln.sh opencode        # list the local models in OpenCode
 ./kiln.sh pi              # list the local models in pi
 ./kiln.sh bench           # quant speed and throughput sweep
@@ -619,20 +621,39 @@ total                     ~29.5 GiB   of ~30.3 GiB usable
 
 ## Using with Cursor
 
-**One-time setup** — Settings (`Ctrl+Shift+J`) → Models:
+```bat
+kiln cursor            :: Windows
+```
+```bash
+./kiln.sh cursor       # WSL, Linux, macOS
+```
 
-1. **Base URL** — check *Override OpenAI Base URL*, paste the URL the
-   start script prints, with `/v1` appended.
-2. **API key** — paste the key the start script prints (from
-   `api_key.txt`). Requests without it are rejected.
-3. **Add model** — type `qwen3.8-27b` in *Add Model*, press Enter, click
-   **Verify**. If you also run the abliterated build, add
-   `qwen3.8-27b-abliterated` as a second model; the launcher prints which
-   name the running server answers to.
-4. Uncheck provider models you don't want to hit by accident.
+Run it once. It points Cursor's *Override OpenAI Base URL* at the
+tunnel `kiln start` opened, turns on *Use OpenAI API Key*, and adds every
+build you have downloaded to Cursor's model list. Then pick one, such as
+`qwen3.8-27b`, in Cursor's model menu. `C` in `kiln tui` does the same.
 
-**Every session:** the quick-tunnel URL changes on restart, so update the
-Base URL each time. To stop that, see below.
+- **It keeps Cursor on the tunnel.** The quick tunnel's address changes
+  every time it starts. From now on `kiln start` writes each new one into
+  Cursor, and `kiln stop` turns the override off, so Cursor's own OpenAI
+  models work while no tunnel is up.
+- **Cursor has to be closed for the change to stick.** It keeps these
+  settings in memory and writes them back when it quits. `kiln cursor`
+  waits for you to quit it. From `kiln start`, `kiln stop` and `kiln tui`
+  nothing waits: the change is made the moment Cursor closes.
+- **Paste the API key once.** Cursor encrypts its OpenAI key, so kiln does
+  not write it. It copies the key to the clipboard and says where it goes:
+  *Settings → Models → OpenAI API Key*. You do this again only after
+  `kiln key rotate`.
+- **`kiln cursor --off` undoes all of it.** Your own base URL (OpenRouter,
+  say) and toggle come back, and the models kiln added go. `--status`
+  shows what Cursor points at; `--print` shows what would change.
+- **From WSL it sets up the Cursor on Windows**, which is the one you run.
+  Run it before any tunnel is up and it waits for the next `kiln start`.
+
+To do it by hand instead: *Settings → Models*, check *Override OpenAI Base
+URL* and paste the tunnel URL with `/v1` appended, paste the API key, add
+`qwen3.8-27b` as a model, and update the URL after each restart.
 
 | Cursor feature | Works? |
 |---|---|
@@ -649,7 +670,8 @@ For a stable address, register a
 [named Cloudflare tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
 you get a fixed subdomain on a domain you control, and can put a
 Cloudflare Access policy in front of it instead of relying on the API key
-alone. Worth the fifteen minutes if you use this daily.
+alone. Worth the fifteen minutes if you use this daily. Point Cursor at
+it with `kiln cursor --url https://llm.example.com`.
 
 ---
 
@@ -839,6 +861,7 @@ NOTES.md               why the tuned constants are what they are
 | Script | Purpose |
 |---|---|
 | `hardware.py` | The model registry and the sizing arithmetic. Detects the GPU, picks model + quant + MTP + context, and generates the tables above. Used by every other script on both platforms. |
+| `cursor.py` | Points Cursor at kiln's tunnel and lists the models, keeps it on each new tunnel, and gives Cursor's own settings back. Behind `kiln cursor`, and run by `kiln start` and `kiln stop`. |
 | `opencode.py` | Writes the `kiln` provider into OpenCode's config. Detects Windows, WSL or Linux and works out the server URL. Behind `kiln opencode`. |
 | `pi_agent.py` | Writes the `kiln` provider into pi's `models.json`, with the same server probe and context sizing as `opencode.py`. Behind `kiln pi`. |
 | `selfupdate.py` | Fast-forwards the checkout to the newest release, or to `main` if you opted in. Refuses rather than overwrite local edits or commits. Behind `kiln self-update` and the board's `kiln` row. |

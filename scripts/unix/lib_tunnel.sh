@@ -7,6 +7,8 @@
 #    kiln_tunnel_pids PORT   cloudflared processes forwarding to
 #                            PORT, one PID a line
 #    kiln_stop_tunnel PORT   stop them; returns 1 if there were none
+#    kiln_cursor_follow URL  point Cursor at it (see below)
+#    kiln_cursor_unfollow    and turn that off again
 #
 #  Other programs run cloudflared too: a named tunnel, T3 Code's
 #  remote access, another project's quick tunnel. `pkill -x
@@ -36,4 +38,20 @@ kiln_stop_tunnel() {
     # shellcheck disable=SC2086  # one PID per word
     kill $pids 2>/dev/null
     return 0
+}
+
+# Cursor follows kiln's tunnel once `kiln cursor` has been run in this
+# checkout, which leaves .kiln/cursor.json. These never fail the caller:
+# the server is up, or down, whatever Cursor makes of it.
+#
+#    kiln_cursor_follow URL   point Cursor at a new tunnel (URL ends /v1)
+#    kiln_cursor_unfollow     turn Cursor's override off again
+kiln_cursor_follow() {
+    [ -f .kiln/cursor.json ] && [ -n "${KILN_PY:-}" ] && [ -n "$1" ] || return 0
+    "$KILN_PY" scripts/cursor.py --follow "$1" || true
+}
+
+kiln_cursor_unfollow() {
+    [ -f .kiln/cursor.json ] && [ -n "${KILN_PY:-}" ] || return 0
+    "$KILN_PY" scripts/cursor.py --unfollow || true
 }

@@ -29,6 +29,7 @@ call "%~dp0lib_ui.bat"
 ::    kiln key [show|rotate|set <key>]
 ::    kiln hardware        what this machine can run
 ::    kiln update          upgrade llama.cpp
+::    kiln cursor          point Cursor at the model, and keep it there
 ::    kiln opencode        list the local models in OpenCode
 ::    kiln pi              list the local models in pi
 ::    kiln self-update     update kiln itself from GitHub
@@ -61,6 +62,7 @@ if /I "%CMD%"=="key"      goto :cmd_key
 if /I "%CMD%"=="update"   goto :cmd_update
 if /I "%CMD%"=="hardware" goto :cmd_hardware
 if /I "%CMD%"=="hw"       goto :cmd_hardware
+if /I "%CMD%"=="cursor"   goto :cmd_cursor
 if /I "%CMD%"=="opencode" goto :cmd_opencode
 if /I "%CMD%"=="pi"       goto :cmd_pi
 if /I "%CMD%"=="self-update" goto :cmd_self_update
@@ -341,6 +343,7 @@ set "V_MIN_BUILD=0"
 if defined ST_GEMMA_S if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --variant gemma-12b 2^>nul`) do if "%%A"=="V_MIN_BUILD" set "V_MIN_BUILD=%%B"
 if not defined ST_NEXT if not "%BUILD%"=="0" if %BUILD% LSS %V_MIN_BUILD% set "ST_NEXT=%C_AC%kiln update%C_0%   Gemma 4 needs llama.cpp b%V_MIN_BUILD% or newer"
 if not defined ST_NEXT if "%ST_RUN%"=="0" set "ST_NEXT=%C_AC%kiln start%C_0%    serve a model to Cursor"
+if not defined ST_NEXT if not exist ".kiln\cursor.json" set "ST_NEXT=%C_AC%kiln cursor%C_0%   connect Cursor to the server"
 exit /b 0
 
 :: :probe <variant id> <out var>
@@ -475,6 +478,12 @@ if "%HIT%"=="1" (
 ) else (
     echo   %C_MU%nothing was running%C_0%
 )
+:: With no tunnel, Cursor's OpenAI override points nowhere: off until
+:: the next start, if kiln cursor set it up.
+if not exist ".kiln\cursor.json" goto :stop_done
+call :find_python
+if defined PY_EXE %PY_EXE% "%~dp0..\cursor.py" --unfollow
+:stop_done
 echo.
 exit /b 0
 
@@ -601,6 +610,20 @@ if "%K%"=="REC_BELOW_QUALITY" if "%V%"=="1" echo   %C_WARN%note       %C_0% a lo
 if "%K%"=="REC_REASON"     echo   %C_ERR%no fit     %C_0% %V%
 exit /b 0
 
+:cmd_cursor
+call :find_python
+if not defined PY_EXE (
+    echo  %C_ERR%Python not found.%C_0% kiln needs it to edit Cursor's settings.
+    echo  Install Python 3.8+ from https://python.org
+    exit /b 1
+)
+:: The key to paste into Cursor has to exist first.
+call "%~dp0lib_api_key.bat"
+if errorlevel 1 exit /b 1
+:: Raw positional args, as in :cmd_opencode below.
+%PY_EXE% "%~dp0..\cursor.py" %2 %3 %4 %5
+exit /b %errorlevel%
+
 :cmd_opencode
 call :find_python
 if not defined PY_EXE (
@@ -707,6 +730,9 @@ echo                           208K context instead of 119K ^(slower generation^
 echo   %C_AC%stop%C_0%                    stop the server and the tunnel
 echo   %C_AC%key%C_0%   [show^|rotate^|set] manage the API key
 echo   %C_AC%hardware%C_0%                what this GPU can run, and at what context
+echo   %C_AC%cursor%C_0%                  point Cursor at the model and keep it there across
+echo                           restarts ^(%C_AC%--off%C_0% to undo, %C_AC%--status%C_0%, %C_AC%--print%C_0%,
+echo                           %C_AC%--url URL%C_0% for a tunnel of your own^)
 echo   %C_AC%opencode%C_0%                list the local models in OpenCode on this machine
 echo                           %C_AC%--print%C_0% to preview, %C_AC%--remove%C_0% to undo,
 echo                           %C_AC%--url URL%C_0% to pin the server address

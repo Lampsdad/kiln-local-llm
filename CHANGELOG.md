@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-15
+
 ### Added
 
 - **`kiln pi`** (`./kiln.sh pi`) lists the local models in
@@ -15,11 +17,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   provider needs llama-server's router mode, so it lists nothing for a
   server `kiln start` runs. The key is read from `api_key.txt` by a
   command rather than copied. `p` in `kiln tui` runs it.
-- **Cursor follows the quick tunnel.** `scripts/unix/cursor_tunnel.sh`
-  starts cloudflared and writes the new `*.trycloudflare.com` host into
-  Cursor's OpenAI base URL, with the API-key workaround on. Stopping
-  the tunnel turns that workaround off and clears a trycloudflare URL.
-  Cursor's saved key is left as it is: the desktop encrypts it.
+- **`kiln cursor`** (`./kiln.sh cursor`) sets Cursor up in one step. It
+  points Cursor's OpenAI base URL at the tunnel `kiln start` opened,
+  turns on the API-key override and lists the downloaded models. After
+  that `kiln start` points Cursor at each new tunnel and `kiln stop`
+  turns the override off. Changes wait for Cursor to close, which would
+  otherwise write its own copy back. From WSL it sets up the Windows
+  Cursor. `--off` gives back Cursor's own settings. The key is pasted
+  once: Cursor encrypts it, so kiln puts it on the clipboard instead.
+  `C` in `kiln tui` runs it. `scripts/unix/cursor_tunnel.sh` now goes
+  through it too.
 - **Gemma 4, opt-in.** `kiln get gemma-26b` and `kiln start gemma-26b`
   serve Google's Gemma 4. There are four variants: `gemma-31b`,
   `gemma-26b` (26B-A4B MoE), `gemma-12b` and `gemma-e4b`. Each one has
@@ -38,6 +45,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory. The benchmark measures and picks within the model line you
   run, as it already did for abliterated builds, and it never picks
   E4B while anything else was measured.
+- **`kiln quality` on Windows**, which only `./kiln.sh` had.
+- **`kiln key set` on macOS and Linux.** It used to print the old key
+  and change nothing. Only Windows had it.
 
 ### Changed
 
@@ -67,6 +77,60 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **kiln stops only its own llama-server.** `kiln stop`, `kiln start`,
+  the benchmark and the quality run stopped every llama-server on the
+  machine (`pkill -x llama-server`, `taskkill /IM llama-server.exe`), and
+  the status board counted any of them as kiln's. kiln's server is now
+  the one on kiln's port, the same rule as the tunnel, through
+  `scripts/unix/lib_server.sh` and `scripts/windows/kiln_server.ps1`.
+  Stopping waits for it to exit, because the next launch needs its
+  memory.
+- **The macOS and Linux start scripts no longer quit on a slow tunnel.**
+  They read the tunnel's address once, after 12 seconds, and exited
+  when it was not there yet, before printing the API key, leaving the
+  server and tunnel running. They now wait up to a minute and carry on
+  either way. Ctrl+C while the model loads now stops the server too;
+  until the load finished, it kept the GPU.
+- **MTP is no longer reported missing on macOS.** The check for it read
+  llama-server's help through `grep -q` under `pipefail`, which fails
+  whenever grep stops reading first, and macOS's small pipe buffer made
+  that likely.
+- **Failing commands fail on Windows.** `kiln get VARIANT` and
+  `kiln start VARIANT` returned success whatever happened, so `kiln tui`
+  showed a failed download as done. Unknown commands return an error.
+- **`kiln key set` on Windows keeps the key as typed.** It dropped or
+  mangled `! ^ ' % & >`, and still said "key set". Quote the key:
+  `kiln key set "YOUR-KEY"`.
+- **The API key stays where it belongs.** The key is now sent to a
+  server only after it answers as llama-server; before, `kiln tui`,
+  `kiln opencode` and `kiln pi` sent it to whatever held port 8080, and
+  to the WSL gateway. It no longer lands in `kiln-benchmark.json` when a
+  setup fails, and the job logs `kiln tui` keeps are deleted when it
+  quits. Keys made on macOS and Linux are 24 bytes, as on Windows and as
+  documented, not 16. The file is created readable only by you, and
+  locked down again on every start.
+- **A small card gets a plan for the model you name.** `kiln get base`
+  on a 16 GB card said nothing fits, and Windows then offered the
+  31.5 GB download first. It now offers the largest quant that loads,
+  says when that is a low-bit one, and defaults to the smallest when
+  nothing fits comfortably. Intel Macs are sized for the CPU, not as
+  Apple Silicon.
+- **Windows paths and locales.** The free-space check reads the drive
+  kiln is on, not always `C:`, and works where the decimal mark is a
+  comma. A `'` in the folder path works. A `!`, `%`, `[` or `]` is
+  refused with a message rather than breaking in odd places. The status
+  board shows the tunnel URL again.
+- **`kiln tui` copes.** A Python environment broken by an upgraded or
+  removed Python is rebuilt instead of failing on every run. Closing
+  the window cancels a download or setup still running, as quitting
+  does; a model that is serving keeps serving. A benchmark whose results
+  file cannot be written, say because OneDrive has it locked, keeps the
+  results and says so instead of closing the app.
+- **Setup keeps a working llama.cpp.** Linux setup in a Windows
+  checkout used from WSL deleted the Windows build; it now stops and
+  says how to go on. A new build replaces the old one only once it is
+  in place, and a failing `nvidia-smi` is reported instead of ending
+  setup without a word.
 - **Linux and WSL setup give an NVIDIA card the CUDA build.** Newer
   `nvidia-smi` prints `CUDA UMD Version: 13.4` where it printed `CUDA
   Version: 13.4`, so setup read no CUDA version and fell back to Vulkan
@@ -342,5 +406,6 @@ place across every platform.
 - **2026-04-24** — Initial local model setup, Windows start scripts, and
   Cursor instructions.
 
+[1.2.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.0.0

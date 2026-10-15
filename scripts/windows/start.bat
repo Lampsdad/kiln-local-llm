@@ -412,12 +412,14 @@ if defined KILN_NO_TUNNEL (
     echo  Tunnel skipped ^(KILN_NO_TUNNEL^) -- no public URL.
     echo  Base URL: http://localhost:%PORT%/v1   ^(model: %ALIAS%^)
     echo  API key : %API_KEY%
+    call :cursor_unfollow
     pause & exit /b 0
 )
 if not exist "%CF_EXE%" (
     echo  cloudflared not found -- serving locally only.
     echo  Base URL: http://localhost:%PORT%/v1   ^(model: %ALIAS%^)
     echo  API key : %API_KEY%
+    call :cursor_unfollow
     pause & exit /b 0
 )
 
@@ -450,6 +452,7 @@ goto tunnel_loop
 set "KILN_PS_FILE=%CD%\%CF_LOG%"
 for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command ^
     "(Select-String -LiteralPath $env:KILN_PS_FILE -Pattern 'https://\S+trycloudflare\.com').Matches.Value | Select-Object -Last 1"`) do set TUNNEL_URL=%%U
+if defined TUNNEL_URL call :cursor_follow "%TUNNEL_URL%/v1"
 
 echo.
 echo ============================================================
@@ -467,6 +470,10 @@ echo.
 echo   NOTE: the URL is public and changes on every restart.
 echo   Requests without the API key above are rejected.
 echo.
+if not exist ".kiln\cursor.json" (
+    echo   kiln cursor sets Cursor up, and keeps it on each new tunnel.
+    echo.
+)
 echo ============================================================
 echo.
 pause >nul
@@ -537,6 +544,21 @@ exit /b 0
 :: %PY_EXE% must be used UNQUOTED inside a for/f backquote: cmd
 :: re-parses that command line, and a quoted program name followed
 :: by further quoted arguments breaks the re-parse silently.
+:: Cursor follows kiln's tunnel once kiln cursor has been run in this
+:: checkout, which leaves .kiln\cursor.json. Never fatal: the server is up
+:: whatever Cursor makes of it.
+:cursor_follow
+if not exist ".kiln\cursor.json" exit /b 0
+call :find_python
+if defined PY_EXE %PY_EXE% "%~dp0..\cursor.py" --follow "%~1"
+exit /b 0
+
+:cursor_unfollow
+if not exist ".kiln\cursor.json" exit /b 0
+call :find_python
+if defined PY_EXE %PY_EXE% "%~dp0..\cursor.py" --unfollow
+exit /b 0
+
 :find_python
 set "PY_EXE="
 for %%P in (python python3 py) do (

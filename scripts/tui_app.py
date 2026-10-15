@@ -194,6 +194,7 @@ On the main screen
   l        start with or without the Cloudflare tunnel
   b        benchmark: measure each setup and pick one
   k / u / t  copy the API key / local URL / tunnel URL
+  C        point Cursor at the model, and keep it there
   o        list the models in OpenCode
   p        list the models in pi
   i        install llama.cpp, or re-run setup
@@ -768,6 +769,7 @@ class KilnApp(App):
         Binding("t", "copy('tunnel')", "Copy tunnel", show=False),
         Binding("m", "toggle_mtp", "MTP on/off", show=False),
         Binding("l", "toggle_local", "Tunnel on/off", show=False),
+        Binding("C", "simple('cursor')", "Cursor", show=False),
         Binding("o", "simple('opencode')", "OpenCode", show=False),
         Binding("p", "simple('pi')", "pi", show=False),
         Binding("i", "simple('setup')", "Setup", show=False),
@@ -1267,6 +1269,7 @@ class KilnApp(App):
                        "on its next start."),
         "opencode": None,
         "pi": None,
+        "cursor": None,
     }
 
     def action_simple(self, action):
