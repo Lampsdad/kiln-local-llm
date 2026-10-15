@@ -1,4 +1,17 @@
 @echo off
+:: A folder name with an exclamation mark or a percent sign breaks
+:: this script: cmd strips the first from every path once delayed
+:: expansion is on, and reads the second again on every call. Refuse
+:: it here, before any path is used.
+echo "%~dp0"| findstr /L "! %%" >nul
+if errorlevel 1 goto :path_ok
+echo.
+echo  kiln cannot run from a folder whose path contains ! or %%.
+echo    "%~dp0"
+echo  Move or rename the folder, then run kiln again.
+echo.
+exit /b 1
+:path_ok
 setlocal enabledelayedexpansion
 cd /d "%~dp0..\.."
 call "%~dp0lib_ui.bat"
@@ -19,7 +32,7 @@ call "%~dp0lib_ui.bat"
 ::    kiln pi              list the local models in pi
 ::    kiln self-update     update kiln itself from GitHub
 ::    kiln tui             full-screen app, with a benchmark
-::    kiln bench | clean | help
+::    kiln bench | quality | clean | help
 ::    kiln path [--remove] put kiln on PATH, for any folder
 ::
 ::  Everything here delegates to the existing scripts, and none
@@ -52,6 +65,7 @@ if /I "%CMD%"=="pi"       goto :cmd_pi
 if /I "%CMD%"=="self-update" goto :cmd_self_update
 if /I "%CMD%"=="tui"      goto :cmd_tui
 if /I "%CMD%"=="bench"    goto :cmd_bench
+if /I "%CMD%"=="quality"  goto :cmd_quality
 if /I "%CMD%"=="clean"    goto :cmd_clean
 if /I "%CMD%"=="path"     goto :cmd_path
 if /I "%CMD%"=="help"     goto :cmd_help
@@ -60,7 +74,10 @@ if /I "%CMD%"=="--help"   goto :cmd_help
 
 echo.
 echo  %C_ERR%Unknown command:%C_0% %CMD%
-goto :cmd_help
+:: The help still prints, but the exit says it failed, so a typo in a
+:: script is not mistaken for success.
+call :cmd_help
+exit /b 1
 
 
 :: ============================================================
@@ -401,12 +418,16 @@ call :step "Upgrading llama.cpp"
 call "%~dp0update.bat"
 exit /b %errorlevel%
 
+:: The exit stays out of any if-block: errorlevel read inside a block
+:: is taken when the block is parsed, before the call has run, so the
+:: exit always said 0. Each line is read on its own, so these are not.
 :cmd_get
 if /I "%ARG%"=="both" goto :get_both
-if defined ARG (
-    call "%~dp0download.bat" "%ARG%"
-    exit /b %errorlevel%
-)
+if not defined ARG goto :get_default
+call "%~dp0download.bat" "%ARG%"
+exit /b %errorlevel%
+
+:get_default
 call "%~dp0download.bat"
 exit /b %errorlevel%
 
@@ -423,10 +444,11 @@ call "%~dp0download.bat" ablit
 exit /b %errorlevel%
 
 :cmd_start
-if defined ARG (
-    call "%~dp0start.bat" "%ARG%" "%ARG2%"
-    exit /b %errorlevel%
-)
+if not defined ARG goto :start_default
+call "%~dp0start.bat" "%ARG%" "%ARG2%"
+exit /b %errorlevel%
+
+:start_default
 call "%~dp0launch.bat"
 exit /b %errorlevel%
 
@@ -475,18 +497,43 @@ echo.
 exit /b 0
 
 :key_set
-if not defined ARG2 (
-    echo  %C_ERR%Usage:%C_0% kiln key set YOUR-KEY
+:: The third argument, not ARG2: ARG2 was set with delayed expansion on, which
+:: has already stripped every exclamation mark and caret from the key.
+:: Delayed expansion is off until the endlocal below, so the key
+:: reaches the environment exactly as it was typed.
+setlocal DisableDelayedExpansion
+set "KILN_NEWKEY=%~3"
+set "KILN_KEYFILE=%~dp0..\..\api_key.txt"
+if not defined KILN_NEWKEY (
+    echo  %C_ERR%Usage:%C_0% kiln key set "YOUR-KEY"
+    echo  The key is empty, so there is nothing to set.
+    endlocal
     exit /b 1
 )
 :: Your own passphrase instead of the generated one. llama-server
 :: compares it verbatim, so anything without a newline works.
-powershell -NoProfile -Command "Set-Content -Path 'api_key.txt' -Value '%ARG2%' -Encoding ascii -NoNewline"
+:: PowerShell takes the key from its environment, never from the
+:: command line, so cmd does no quoting of it. The file is written as
+:: UTF-8 without a byte order mark or a newline, read back, and
+:: compared case-sensitively (-cne). Exit 2 means a double quote,
+:: which cmd cannot pass reliably.
+powershell -NoProfile -Command "if ($env:KILN_NEWKEY.Contains([char]34)) { exit 2 }; [IO.File]::WriteAllText($env:KILN_KEYFILE, $env:KILN_NEWKEY, (New-Object Text.UTF8Encoding $false)); if ([IO.File]::ReadAllText($env:KILN_KEYFILE) -cne $env:KILN_NEWKEY) { exit 1 }"
+if errorlevel 2 (
+    echo  %C_ERR%A key cannot contain a double quote.%C_0% cmd cannot pass one reliably.
+    endlocal
+    exit /b 1
+)
+if errorlevel 1 (
+    echo  %C_ERR%api_key.txt could not be written, or did not read back the same.%C_0%
+    endlocal
+    exit /b 1
+)
 icacls "api_key.txt" /inheritance:r /grant:r "%USERNAME%:F" >nul 2>&1
 echo.
 echo   %C_OK%key set%C_0%
 echo   %C_WARN%Restart the server to load it.%C_0%
 echo.
+endlocal
 exit /b 0
 
 :cmd_hardware
@@ -611,6 +658,10 @@ if not defined PY_EXE (
 call "%~dp0benchmark.bat"
 exit /b %errorlevel%
 
+:cmd_quality
+call "%~dp0quality.bat"
+exit /b %errorlevel%
+
 :cmd_clean
 call "%~dp0cleanup.bat"
 exit /b %errorlevel%
@@ -659,6 +710,7 @@ echo                           %C_AC%--check%C_0% to only report what is availab
 echo   %C_AC%tui%C_0%                     full-screen app, with an interactive benchmark
 echo                           ^(the default: kiln with no command does this^)
 echo   %C_AC%bench%C_0%                   quant speed and throughput sweep
+echo   %C_AC%quality%C_0%                 KL-divergence of each quant vs Q8_0
 echo   %C_AC%clean%C_0%                   reclaim disk from superseded GGUFs
 echo   %C_AC%path%C_0%  [--remove]        put kiln on PATH, so it runs from any folder
 echo                           ^(setup does this; %C_AC%--remove%C_0% undoes it^)

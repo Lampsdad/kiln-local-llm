@@ -777,13 +777,15 @@ read it. That lockdown is reapplied on every launch, so a key written
 before this existed gets fixed the next time you start the server.
 
 ```bat
-kiln key show           :: print it (also generates it the first time)
-kiln key rotate         :: throw it away and make a new one
-kiln key set MY-SECRET  :: use a passphrase you choose instead
+kiln key show             :: print it (also generates it the first time)
+kiln key rotate           :: throw it away and make a new one
+kiln key set "MY-SECRET"  :: use a passphrase you choose instead
 ```
 
 `kiln key set` accepts anything on one line — llama-server compares it
-verbatim. Rotating or setting takes effect on the next server start, and
+verbatim. Quote the key, as above, so the shell passes it whole. On
+Windows it also cannot contain a double quote, which cmd cannot pass.
+Rotating or setting takes effect on the next server start, and
 you have to paste the new value into Cursor.
 
 The server also binds `0.0.0.0`, so the key is what protects you on any
