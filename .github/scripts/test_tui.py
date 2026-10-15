@@ -86,7 +86,11 @@ class Bootstrap(unittest.TestCase):
             open(tui.venv_python(), "w").close()
             return 1
 
+        # ROOT moves with VENV: install() prints one relative to the
+        # other, which fails across drives (the checkout is on D: on
+        # GitHub's Windows runners, the temp folder on C:).
         with mock.patch.object(tui, "VENV", os.path.join(tmp.name, "v")), \
+                mock.patch.object(tui, "ROOT", tmp.name), \
                 mock.patch.object(tui.subprocess, "call", call), \
                 mock.patch.object(sys, "stdin", Terminal()), \
                 mock.patch("builtins.input", return_value=""), \
@@ -125,6 +129,7 @@ class Bootstrap(unittest.TestCase):
 
         out = io.StringIO()
         with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui, "ROOT", os.path.dirname(venv)), \
                 mock.patch.object(tui.subprocess, "call", call), \
                 mock.patch.object(sys, "stdin", Terminal()), \
                 mock.patch("builtins.input", return_value="y"), \
@@ -145,6 +150,7 @@ class Bootstrap(unittest.TestCase):
             return 0
 
         with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui, "ROOT", os.path.dirname(venv)), \
                 mock.patch.object(tui.subprocess, "call", call), \
                 mock.patch.object(sys, "stdin", Terminal()), \
                 mock.patch("builtins.input", return_value="y"), \

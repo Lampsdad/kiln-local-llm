@@ -15,6 +15,7 @@ so only its wiring is checked here.
 """
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,19 +31,18 @@ import control  # noqa: E402
 
 
 @unittest.skipIf(sys.platform == "win32", "lib_tunnel.sh is the Unix half")
-@unittest.skipIf(sys.platform == "darwin",
-                 "macOS ps -o comm names a script's interpreter, not the script, "
-                 "so a shell-script stand-in for cloudflared is never recognised; "
-                 "a real cloudflared is a binary there")
 class OnlyOurs(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.port = random.randint(50000, 59000)
+        # A copy of bash named cloudflared, not a script: macOS's ps names
+        # a script's interpreter, so a script would never be recognised.
         self.fake = os.path.join(tmp.name, "cloudflared")
-        with open(self.fake, "w") as fh:
-            fh.write("#!/bin/sh\nwhile :; do sleep 1; done\n")
-        os.chmod(self.fake, 0o755)
+        shutil.copy(shutil.which("bash"), self.fake)
+        self.body = os.path.join(tmp.name, "body.sh")
+        with open(self.body, "w") as fh:
+            fh.write("while :; do sleep 1; done\n")
         self.procs = {}
         self.addCleanup(self.kill_all)
 
@@ -64,7 +64,7 @@ class OnlyOurs(unittest.TestCase):
                                             start_new_session=True)
 
     def tunnel(self, name, *args):
-        self.spawn(name, self.fake, "tunnel", *args)
+        self.spawn(name, self.fake, self.body, "tunnel", *args)
 
     def start_everything(self):
         p = self.port

@@ -375,7 +375,9 @@ class Jobs(unittest.TestCase):
                    " print('err', file=sys.stderr); sys.exit(3)"],
                   done.set, {"KILN_NO_TUNNEL": "1"})
         self.assertEqual(job.wait(20), 3)
-        self.assertTrue(done.is_set())
+        # wait returns once the exit code is in, which can be just before
+        # the callback has run.
+        self.assertTrue(done.wait(20))
         text = job.view(0)["text"]
         # The command line shown says what the scripts were given.
         self.assertIn("$ KILN_NO_TUNNEL=1 kiln start base", text)

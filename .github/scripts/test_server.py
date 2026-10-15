@@ -20,6 +20,7 @@ matched. The MTP probe runs against a fake binary with a large help text.
 """
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -59,6 +60,19 @@ class Sandbox(unittest.TestCase):
                     pass
             p.wait()
 
+    def fake(self, name, body, exe="llama-server"):
+        """argv for a stand-in that ps names exe: a copy of bash under
+        that name, running body. A script would not do: macOS's ps names
+        a script's interpreter, so it would never be recognised there."""
+        d = os.path.join(self.tmp, name)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, exe)
+        shutil.copy(shutil.which("bash"), path)
+        body_path = os.path.join(d, "body.sh")
+        with open(body_path, "w") as fh:
+            fh.write(body + "\n")
+        return [path, body_path]
+
     def script(self, name, body, exe="llama-server"):
         # Each fake lives in a directory of its own, so that every one can
         # be called llama-server.
@@ -78,7 +92,7 @@ class Sandbox(unittest.TestCase):
         return self.procs[name]
 
     def server(self, name, *args, body=LOOP):
-        self.spawn(name, self.script(name, body), *args)
+        self.spawn(name, *self.fake(name, body), *args)
 
     def lib(self, call, *args):
         return subprocess.run(["bash", "-c", "set -euo pipefail; . \"$1\"; " + call, "-", LIB, *args],
@@ -165,7 +179,7 @@ class TunnelAddress(Sandbox):
         return r, time.time() - started
 
     def dead_cloudflared(self):
-        p = subprocess.Popen([self.script("dead", "exit 1", exe="cloudflared"), self.log])
+        p = subprocess.Popen(self.fake("dead", "exit 1", exe="cloudflared") + [self.log])
         p.wait()
         return p.pid
 
@@ -173,7 +187,7 @@ class TunnelAddress(Sandbox):
         # cloudflared prints its address a few seconds in, as it does on a
         # slow link; the start script must not give up before then.
         body = 'sleep 3\necho "| %s |" >> "$1"\n%s' % (self.URL, LOOP)
-        p = self.spawn("cf", self.script("late", body, exe="cloudflared"), self.log)
+        p = self.spawn("cf", *self.fake("late", body, exe="cloudflared"), self.log)
         r, took = self.wait_for_url(p.pid)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "url:[%s]" % self.URL)
