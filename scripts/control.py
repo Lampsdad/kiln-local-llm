@@ -288,7 +288,14 @@ def processes(plat, port):
     if plat == "windows":
         out = _output(_run(["tasklist", "/NH", "/FO", "CSV"])).lower()
         # The command line needs PowerShell, so only ask when some
-        # cloudflared.exe is running at all.
+        # llama-server.exe or cloudflared.exe is running at all.
+        llama = False
+        if '"llama-server.exe"' in out:
+            proc = _run(["powershell", "-NoProfile", "-ExecutionPolicy",
+                         "Bypass", "-File",
+                         os.path.join(HERE, "windows", "kiln_server.ps1"),
+                         "-Port", str(port)])
+            llama = proc is not None and proc.returncode == 0
         tunnel = False
         if '"cloudflared.exe"' in out:
             proc = _run(["powershell", "-NoProfile", "-ExecutionPolicy",
@@ -296,7 +303,7 @@ def processes(plat, port):
                          os.path.join(HERE, "windows", "kiln_tunnel.ps1"),
                          "-Port", str(port)])
             tunnel = proc is not None and proc.returncode == 0
-        return '"llama-server.exe"' in out, tunnel
+        return llama, tunnel
 
     llama = False
     proc = _run(["pgrep", "-f", SERVER_ARGS % port])

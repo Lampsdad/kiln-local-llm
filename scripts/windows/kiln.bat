@@ -286,7 +286,7 @@ if defined QWEN_VISION (set "ST_SHARED_S=!ST_SHARED_S!   %C_OK%vision%C_0%") els
 :: ---- server ----
 set "ST_RUN=0"
 set "ST_RUN_S=%C_MU%stopped%C_0%"
-tasklist /FI "IMAGENAME eq llama-server.exe" 2>nul | findstr /I "llama-server.exe" >nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port 8080 >nul 2>&1
 if not errorlevel 1 (
     set "ST_RUN=1"
     set "ST_RUN_S=%C_OK%running%C_0%  %C_MU%port 8080%C_0%"
@@ -433,9 +433,10 @@ exit /b %errorlevel%
 :cmd_stop
 call :step "Stopping llama-server and cloudflared"
 set "HIT=0"
-tasklist /FI "IMAGENAME eq llama-server.exe" 2>nul | findstr /I "llama-server.exe" >nul
+:: Only the server on start.bat's port 8080. Other llama-server.exe
+:: processes are not ours to stop. See kiln_server.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port 8080 -Stop
 if not errorlevel 1 set "HIT=1"
-taskkill /F /IM llama-server.exe >nul 2>&1
 :: Only kiln's own tunnel, the one to start.bat's port 8080. Other
 :: cloudflared.exe processes, such as a named tunnel run as a service,
 :: are not ours to stop.

@@ -49,7 +49,7 @@ if not exist "%REF%" (
 )
 
 echo Stopping any running llama-server to free VRAM...
-taskkill /F /IM llama-server.exe >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port 8080 -Stop >nul 2>&1
 timeout /t 3 >nul
 
 :: ---- corpus ----

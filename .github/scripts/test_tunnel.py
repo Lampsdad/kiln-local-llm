@@ -124,10 +124,13 @@ class NothingKillsByName(unittest.TestCase):
                 self.assertNotIn("pkill -x cloudflared", text)
                 self.assertNotIn("/im cloudflared.exe", text)
                 # The llama-server rule, and its tests, are in
-                # test_server.py. These are the name-based forms it bans.
+                # test_server.py and test_windows_server.py. These are the
+                # name-based forms it bans.
                 self.assertNotIn("pkill -x llama-server", text)
                 self.assertNotIn("pgrep -x llama-server", text)
                 self.assertNotIn('"-x", "llama-server"', text)
+                self.assertNotIn("/im llama-server.exe", text)
+                self.assertNotIn("imagename eq llama-server.exe", text)
 
     def test_windows_stop_and_start_use_kiln_tunnel_ps1(self):
         for f in ("kiln.bat", "start.bat"):
