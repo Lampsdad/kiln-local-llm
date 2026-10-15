@@ -198,7 +198,7 @@ to do next:
  |_|\_\|_||_||_| |_|  local models, fired on your own GPU
 
  ------------------------------------------------------------
-  kiln           v1.1.0
+  kiln           v1.2.0
   llama.cpp      installed  build 9431
   MTP support    available
   cloudflared    installed
