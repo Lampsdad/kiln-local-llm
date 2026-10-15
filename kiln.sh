@@ -153,7 +153,12 @@ status() {
         printf '  %-14s %s\n' "GPU" \
             "$(nvidia-smi "--query-gpu=name,memory.total" --format=csv,noheader 2>/dev/null | head -1)"
     elif [ "$PLATFORM" = mac ]; then
-        printf '  %-14s %s\n' "GPU" "Apple $(sysctl -n machdep.cpu.brand_string 2>/dev/null) (Metal)"
+        # Metal is Apple Silicon only. llama.cpp's Intel build runs on the CPU.
+        if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+            printf '  %-14s %s\n' "GPU" "Apple $(sysctl -n machdep.cpu.brand_string 2>/dev/null) (Metal)"
+        else
+            printf '  %-14s %s\n' "GPU" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null) (CPU only)"
+        fi
     fi
 
     # What this card can actually run -- answers "will it run on my
