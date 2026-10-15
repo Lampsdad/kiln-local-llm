@@ -293,8 +293,9 @@ class BenchScreen(Screen):
         # The kind of build the user runs: the pick comes from those,
         # and only those are ticked to start with (see bench.recommend).
         self.uncensored = bench.runs_uncensored(status, preferred)
-        self.ticked = {s.id for s in bench.default_setups(self.setups,
-                                                          self.uncensored)}
+        self.line = bench.runs_line(status, preferred)
+        self.ticked = {s.id for s in bench.default_setups(
+            self.setups, self.uncensored, self.line)}
         self.depth = "quick"
         self.runner = None
         self.doc = bench.load()
@@ -359,7 +360,8 @@ class BenchScreen(Screen):
             % (what, n, bench.estimate_minutes(max(n, 1), self.depth))))
 
     def show_results(self, results):
-        rec = bench.recommend(results, uncensored=self.uncensored)
+        rec = bench.recommend(results, uncensored=self.uncensored,
+                              line=self.line)
         self.pick_id = rec["pick"]["id"] if rec else None
         self.row_ids = [r["id"] for r in results]
         self.results = {r["id"]: r for r in results}
@@ -419,7 +421,7 @@ class BenchScreen(Screen):
                     f["gen_tps"])))
             if rec["set_aside"]:
                 rows.append(("", sentence(bench.set_aside_note(
-                    rec, self.uncensored))))
+                    rec, self.uncensored, self.line))))
             rows.append(("", "a starts the selected row and makes it the "
                          "default. p copies a report."))
         for r in results:
@@ -600,7 +602,8 @@ class BenchScreen(Screen):
 
     def action_copy_report(self):
         if self.doc:
-            self.app.copy_text(bench.report(self.doc, self.uncensored),
+            self.app.copy_text(bench.report(self.doc, self.uncensored,
+                                            self.line),
                                "Benchmark report")
 
     def on_unmount(self):
@@ -867,6 +870,8 @@ class KilnApp(App):
                 notes.append("third-party distill")
             if not m["vision"]:
                 notes.append("text only")
+            if m["quant"] and control.too_old(s["llama"], m):
+                notes.append("needs llama.cpp b%d+" % m["min_build"])
             if m["recommended"]:
                 notes.append("best fit")
             cells = (" ".join(marks), m["label"], disk, ctx, ", ".join(notes))

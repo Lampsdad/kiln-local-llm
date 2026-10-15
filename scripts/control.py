@@ -71,7 +71,7 @@ SLOW_TTL = 300
 
 # Families in the order start.bat and lib_variants.sh pick from when no
 # variant is named: stock before abliterated, big before small.
-START_ORDER = ("base", "ablit", "9b", "4b")
+START_ORDER = tuple(hardware.DISK_ORDER)
 
 KEEP_JOBS = 20
 
@@ -190,8 +190,8 @@ def slow_facts(plat):
     if plan:
         fam = hardware.MODELS[plan["family"]]
         total = (plan["quant_bytes"]
-                 + (hardware.MTP_HEADS[plan["mtp"]][1] if plan["mtp"] else 0)
-                 + (hardware.MMPROJ[plan["mmproj"]][2]
+                 + (fam["mtp_heads"][plan["mtp"]].bytes if plan["mtp"] else 0)
+                 + (fam["mmproj"][plan["mmproj"]].bytes
                     if plan["mmproj"] else 0))
         rec = {"family": plan["family"], "label": fam["label"],
                "quant": plan["quant"], "ctx": plan["ctx"],
@@ -241,17 +241,18 @@ def model_rows(vram, rec_family):
             # exact file is already there, as the download scripts do.
             extra = 0
             if plan["mtp"]:
-                f, size = hardware.MTP_HEADS[plan["mtp"]]
-                extra += 0 if _exists(f) else size
+                head = fam["mtp_heads"][plan["mtp"]]
+                extra += 0 if _exists(head.local) else head.bytes
             if plan["mmproj"]:
-                _, f, size = hardware.MMPROJ[plan["mmproj"]]
-                extra += 0 if _exists(f) else size
+                proj = fam["mmproj"][plan["mmproj"]]
+                extra += 0 if _exists(proj.local) else proj.bytes
             get = {"quant": plan["quant"], "ctx": plan["ctx"],
                    "gb": round((plan["quant_bytes"] + extra) / 1e9, 1)}
         rows.append({
             "id": fam_id, "label": fam["label"], "alias": fam["alias"],
             "params": fam["params"], "uncensored": fam["uncensored"],
             "third_party": bool(fam.get("third_party")),
+            "min_build": fam["min_build"],
             "mtp": fam["mtp"], "vision": fam["vision"],
             "quant": quant, "ctx": ctx, "ctx_no_mtp": ctx_no_mtp,
             "has_mtp_head": bool(files and files[1]),
@@ -261,9 +262,13 @@ def model_rows(vram, rec_family):
 
 
 def shared_files():
-    """The MTP head and projector on disk, whichever precision."""
-    mtp = next((f for f, _ in hardware.MTP_HEADS.values() if _exists(f)), "")
-    mm = next((f for _, f, _ in hardware.MMPROJ.values() if _exists(f)), "")
+    """An MTP head and a projector on disk, whichever family and
+    precision they are for."""
+    fams = list(hardware.MODELS.values())
+    mtp = next((h.local for f in fams for h in f["mtp_heads"].values()
+                if _exists(h.local)), "")
+    mm = next((p.local for f in fams for p in f["mmproj"].values()
+               if _exists(p.local)), "")
     return {"mtp": mtp, "vision": mm}
 
 
@@ -373,6 +378,13 @@ def server_facts(plat, port, key):
     return out
 
 
+def too_old(llama, m):
+    """True when llama.cpp is known to be older than family m needs,
+    so kiln start would refuse it. An unreadable build is not."""
+    build = int(llama.get("build") or 0)
+    return bool(build and build < m.get("min_build", 0))
+
+
 def first_on_disk(models):
     have = {m["id"] for m in models if m["quant"]}
     return next((f for f in START_ORDER if f in have), "")
@@ -388,6 +400,12 @@ def next_step(plat, llama, models, state, rec):
     if plat == "windows" and not llama["mtp"]:
         return {"action": "update", "label": "Upgrade",
                 "text": "Upgrade llama.cpp for MTP speculative decoding"}
+    # kiln.sh has no update verb, so elsewhere the model row says it.
+    old = [m for m in models if m["quant"] and too_old(llama, m)]
+    if plat == "windows" and old:
+        return {"action": "update", "label": "Upgrade",
+                "text": "Upgrade llama.cpp: %s needs b%d or newer"
+                        % (old[0]["label"], old[0]["min_build"])}
     if not first_on_disk(models):
         return {"action": "get", "variant": rec["family"] if rec else "",
                 "label": "Download",

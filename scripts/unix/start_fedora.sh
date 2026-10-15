@@ -3,8 +3,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-# VARIANT=base (stock) or VARIANT=ablit (abliterated).
-# Both share the MTP head and the vision projector below.
+# VARIANT=base (stock), VARIANT=ablit (abliterated), or any other
+# family in scripts/hardware.py (9b, gemma-26b, ...).
 # With no VARIANT set, resolve it from what is on disk -- see the
 # KILN_PICK block in lib_variants.sh.
 KILN_PICK=disk . "$SCRIPT_DIR/lib_variants.sh"
@@ -32,6 +32,11 @@ fi
 # ── API key (the tunnel URL is public — see lib_api_key.sh) ──
 . "$SCRIPT_DIR/lib_api_key.sh"
 
+# ── per-family flags: sampling, MTP head, vision (lib_select.sh) ─
+# Before the stop below: a build too old for this family exits
+# here, and should leave whatever is serving now alone.
+kiln_model_args "$BINARY"
+
 # ── stop any running instances ───────────────────────────────
 echo "Stopping any existing instances..."
 pkill -x llama-server 2>/dev/null || true
@@ -39,18 +44,6 @@ pkill -x cloudflared  2>/dev/null || true
 sleep 1
 
 # ── start llama-server ───────────────────────────────────────
-EXTRA=()
-if [ -n "$MTP" ] && "$BINARY" --help 2>&1 | grep -q 'draft-mtp'; then
-    EXTRA+=(--spec-type draft-mtp --spec-draft-model "$MTP" \
-            --spec-draft-ngl 99 --spec-draft-n-max 3)
-    echo "MTP speculative decoding: enabled"
-fi
-# Plain if: under set -e a failing `[ -f x ] && ...` aborts
-# the script, which killed this before it printed anything
-# whenever the vision projector was absent.
-if [ -n "$MMPROJ" ]; then
-    EXTRA+=(--mmproj "$MMPROJ")
-fi
 
 echo "Starting llama-server..."
 "$BINARY" \
@@ -63,7 +56,6 @@ echo "Starting llama-server..."
     --parallel     1 \
     --jinja \
     --reasoning-format deepseek \
-    --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
     --port         $PORT \
     --host         0.0.0.0 \
     --alias        "$V_ALIAS" \

@@ -308,8 +308,8 @@ def on_disk(fam_id):
     weights = _first("%s-%s.gguf" % (fam["prefix"], q) for q, _ in fam["quants"])
     if not weights:
         return None
-    mtp = _first(f for f, _ in hardware.MTP_HEADS.values()) if fam["mtp"] else ""
-    mm = _first(f for _, f, _ in hardware.MMPROJ.values()) if fam["vision"] else ""
+    mtp = _first(h.local for h in fam["mtp_heads"].values())
+    mm = _first(p.local for p in fam["mmproj"].values())
     return weights, mtp, mm
 
 
@@ -326,9 +326,9 @@ def planned_ctx(fam_id, files, vram):
             return 0
 
     weights, mtp, mm = files
-    return hardware.context_for(vram, size(weights), fam["kv_bytes"],
-                                fam["recurrent_mib"], size(mtp), size(mm),
-                                fam["max_ctx"])
+    on_gpu = hardware.gpu_mib(fam, hardware.quant_of(fam, weights),
+                              os.path.getsize(weights)) if size(weights) else 0
+    return hardware.fam_context(fam, vram, on_gpu, size(mtp), size(mm))
 
 
 def model_entry(name, ctx, vision):

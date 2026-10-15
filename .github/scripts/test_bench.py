@@ -95,6 +95,69 @@ class Setups(unittest.TestCase):
         self.assertEqual(bench.setups(status([model("base")],
                                              installed=False)), [])
 
+    def test_gemma_needs_its_build(self):
+        models = [model("base"), dict(model("gemma-12b"), min_build=11059)]
+        old = status(models)
+        old["llama"]["build"] = "10901"
+        self.assertEqual([s.variant for s in bench.setups(old)],
+                         ["base", "base"])
+        new = status(models)
+        new["llama"]["build"] = "11624"
+        self.assertIn("gemma-12b", [s.variant for s in bench.setups(new)])
+
+
+class Lines(unittest.TestCase):
+    """Qwen or Gemma is a choice about the model, like abliterated: the
+    benchmark measures and picks within the line you run, and never
+    picks Gemma 4 E4B while anything else measured."""
+
+    def found(self, *fams):
+        st = status([model(f) for f in fams])
+        st["llama"]["build"] = "11624"
+        return bench.setups(st)
+
+    def test_by_default_only_your_model_line(self):
+        found = self.found("base", "gemma-12b", "gemma-e4b")
+        self.assertEqual(
+            [s.id for s in bench.default_setups(found, False)],
+            ["base", "base-nomtp"])
+        self.assertEqual(
+            [s.id for s in bench.default_setups(found, False, "gemma")],
+            ["gemma-12b", "gemma-12b-nomtp"])
+        only = self.found("base", "gemma-e4b")
+        self.assertEqual(
+            [s.id for s in bench.default_setups(only, False, "gemma")],
+            ["gemma-e4b", "gemma-e4b-nomtp"])
+
+    def test_runs_line(self):
+        saved = bench.load
+        self.addCleanup(setattr, bench, "load", saved)
+        bench.load = lambda: None
+        st = dict(status([]), start_default="base")
+        self.assertEqual(bench.runs_line(st), "qwen")
+        self.assertEqual(bench.runs_line(st, "gemma-26b"), "gemma")
+        bench.load = lambda: {"chosen": {"variant": "gemma-31b"}}
+        self.assertEqual(bench.runs_line(st), "gemma")
+
+    def test_pick_stays_on_your_line(self):
+        results = [result("base", 85.0, 114688),
+                   result("gemma-12b", 200.0, 262144, variant="gemma-12b"),
+                   result("gemma-e4b", 275.0, 131072, variant="gemma-e4b")]
+        rec = bench.recommend(results, min_ctx=98304)
+        self.assertEqual(rec["pick"]["id"], "base")
+        self.assertIn("other model line", bench.set_aside_note(rec))
+        rec = bench.recommend(results, min_ctx=98304, line="gemma")
+        self.assertEqual(rec["pick"]["id"], "gemma-12b")
+
+    def test_e4b_is_picked_only_when_alone(self):
+        both = [result("gemma-12b", 200.0, 262144, variant="gemma-12b"),
+                result("gemma-e4b", 275.0, 131072, variant="gemma-e4b")]
+        rec = bench.recommend(both, min_ctx=98304, line="gemma")
+        self.assertEqual(rec["pick"]["id"], "gemma-12b")
+        self.assertIn("E4B", bench.set_aside_note(rec, line="gemma"))
+        rec = bench.recommend(both[1:], min_ctx=98304, line="gemma")
+        self.assertEqual(rec["pick"]["id"], "gemma-e4b")
+
 
 def result(rid, gen, ctx, error=None, **kw):
     r = {"id": rid, "variant": rid.split("-")[0], "label": "L", "quant": "Q",

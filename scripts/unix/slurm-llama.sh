@@ -15,7 +15,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 cd "${HOME}/research/Local-LLM-setup-for-cursor"
 
 PORT=8081
-# VARIANT=base (stock) or VARIANT=ablit (abliterated).
+# VARIANT=base (stock), VARIANT=ablit, or any family in hardware.py.
 KILN_PICK=disk . ./scripts/unix/lib_variants.sh
 
 # Resolves MODEL / MTP / MMPROJ / FIT_ARGS against what is on
@@ -34,17 +34,8 @@ pkill -x cloudflared 2>/dev/null || true
 
 # The job requests a single RTX 5090 (32 GB), but lib_select.sh
 # sizes against whatever was allocated rather than trusting that.
-EXTRA=()
-if [ -n "$MTP" ] && "$BINARY" --help 2>&1 | grep -q 'draft-mtp'; then
-    EXTRA+=(--spec-type draft-mtp --spec-draft-model "$MTP" \
-            --spec-draft-ngl 99 --spec-draft-n-max 3)
-fi
-# Plain if: this script runs under set -e, so a failing
-# `[ -f x ] && ...` would abort the job before the server
-# ever started, leaving nothing but a zero-length log.
-if [ -n "$MMPROJ" ]; then
-    EXTRA+=(--mmproj "$MMPROJ")
-fi
+# Per-family flags: sampling, MTP head, vision (lib_select.sh).
+kiln_model_args "$BINARY"
 
 exec "$BINARY" \
   --model "$MODEL" \
@@ -59,7 +50,6 @@ exec "$BINARY" \
   --threads 6 \
   --jinja \
   --reasoning-format deepseek \
-  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
   --port "$PORT" \
   --host 0.0.0.0 \
   --alias "$V_ALIAS" \

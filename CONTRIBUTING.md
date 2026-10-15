@@ -87,11 +87,16 @@ Both script families are maintained in parallel — a change to
 
 ## Adding a model variant
 
-`scripts/windows/lib_variants.bat` and `scripts/unix/lib_variants.sh` are
-the only files that know what a
-build *is*. Everything else reads repo, filename prefix and Cursor alias
-out of them and is otherwise variant-blind. A third variant should be a
-branch there and nowhere else.
+`MODELS` in `scripts/hardware.py` is the only place that knows what a
+build *is*: repo, filename prefix, Cursor alias, quant ladder with byte
+sizes, MTP head, vision projector, sampling, draft length and minimum
+llama.cpp build. `lib_variants.bat` and `lib_variants.sh` read it, and
+everything else is variant-blind. A new variant is an entry there,
+plus its place in `DISK_ORDER`, and in `FAMILY_ORDER` or `SIBLINGS` if
+kiln may pick or suggest it. The Gemma 4 entries are the template for
+a new architecture. NOTES.md says how their sizing was measured.
+`.github/scripts/test_hardware.py` checks that the new entry's files
+do not collide with an existing one.
 
 ## What never gets committed
 

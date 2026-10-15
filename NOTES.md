@@ -48,11 +48,12 @@ probe still lands on 114688 for this card.
 
 ## Model variants
 
-`lib_variants.bat` / `lib_variants.sh` (in `scripts/windows/` and
-`scripts/unix/`) are the only files that know what a
-build *is*. A third variant means adding a branch there — the download,
-start and launch scripts read repo, filename prefix and Cursor alias out
-of it and are otherwise variant-blind.
+`MODELS` in `scripts/hardware.py` is the only place that knows what a
+build *is*: repo, filename prefix, Cursor alias, quant ladder, MTP head,
+vision projector, sampling, draft length and minimum llama.cpp build.
+`lib_variants.bat` / `lib_variants.sh` read it and hand the fields to the
+download, start and launch scripts, which are otherwise variant-blind.
+Their hardcoded base/ablit copy is only the no-Python fallback.
 
 **Why huihui-ai for the abliterated build.** There are on the order of
 thirty abliterated Qwen3.8-27B GGUF repos. This one was picked because
@@ -78,10 +79,77 @@ leaves 0–17 untouched, which is what keeps coding and tool-calling near
 stock. They also publish a `UD-DW-*` series ablating only 23–51 (less
 thorough, warns more); it is not wired up here.
 
-**The size columns** in `scripts/windows/download.bat` are the actual byte
-sizes from the Hugging Face file listings on 2026-09-01, and only feed the
-free-space check. The stock column was previously off by up to 1 GB in
-both directions; re-check both if either publisher reuploads.
+**The byte sizes** in `scripts/hardware.py` are the actual sizes from
+the Hugging Face file listings, read 2026-09-04 for Qwen and 2026-10-14
+for Gemma 4. They feed the download menu, the free-space check and every
+context number. The stock Qwen column was once off by up to 1 GB in both
+directions, so re-check if a publisher reuploads.
+
+## Gemma 4
+
+**Why opt-in.** Every number in this repo was tuned on Qwen3.8-27B, and
+nothing here measures Gemma's coding quality against it. So Gemma is in
+no `FAMILY_ORDER`, and kiln never picks it for you. `SIBLINGS["gemma"]`
+is what a Gemma user gets pointed at when their model does not fit.
+E4B is left out of it on purpose (Tau2 42% against the 31B's 77%).
+
+**Why unsloth.** Its repos ship the UD quants, the vision projector and
+the MTP drafter side by side, and the projector is the only file whose
+name clashes. unsloth calls both the Qwen and the Gemma projector
+`mmproj-F16.gguf`, so Gemma's is saved as `mmproj-<stem>-F16.gguf`. The
+download scripts check for a file by its local name, and before this
+they would have skipped Gemma's projector as "already present". The
+registry keeps `remote` and `local` names apart for this reason.
+`test_hardware.py` fails if two families ever map different files to
+one local name.
+
+**No abliterated Gemma, yet.** huihui-ai publishes abliterated Gemma 4
+GGUFs only of Google's QAT checkpoints. Nobody has re-ablated unsloth's
+quants the way huihui did for Qwen, so the quant ladder and the shared
+MTP head would not carry over.
+
+**How the sizing was checked.** On the 5090, at llama.cpp b11624, each
+model was loaded at two or more contexts, with and without the MTP
+head and the projector, and the VRAM llama-server added over idle was
+read from nvidia-smi:
+
+| Load | 32K | 64K | 96K | 128K | 256K |
+|---|---|---|---|---|---|
+| 31B `UD-Q5_K_XL` | 24,107 | | 27,469 | | |
+| 31B + MTP | 25,081 | | 29,072 | | |
+| 12B `UD-Q8_K_XL` | | 14,750 | | 15,560 | 17,159 |
+| 12B + MTP | | 15,546 | | | 18,716 |
+| E4B `UD-Q8_K_XL` | 6,585 | | | 7,988 | |
+
+(MiB.) Per token that is 53,792 B for the 31B, 12,792-12,960 for the
+12B and 14,965 for the E4B. That is more than the q8_0 KV cache alone
+(43,520 / 8,704 / 8,704). The difference fits one global layer's K and
+V at f16 plus a 2-byte mask entry per ubatch row, to within 1%, so
+that is what `kv_bytes` counts. The MTP head adds the same scratch
+again per token (measured 4,059 B on the 12B and 10,064 B on the 31B,
+against 4,096 and 10,240 modelled), plus a fixed 4-163 MiB.
+
+The fixed costs went the other way: `COMPUTE_BUF_MIB` + `state_mib`
+over-counts by about 1.4 GB on all three. That is margin, and it is
+left alone. The cross-check was the 31B `UD-Q5_K_XL` with MTP and
+vision at the 72K the formula allows. It loaded with the whole card at
+31,162 of 32,607 MiB, desktop included. Before the scratch was counted,
+the formula put that same setup at 108K, about 2 GB more than the card
+has.
+
+The 26B-A4B was not loaded. Its numbers come from the same formula.
+
+**E4B's weights are not all on the GPU.** Its per-layer embedding table
+(256 x 42 layers x the 262K vocab) is read lazily from system RAM. With
+Q8 weights, the server took 6,585 MiB at 32K, against an 8,308 MiB
+file. The table is stored at Q8_0, Q5_K or Q4_K depending on the quant
+(read from the GGUF headers), and `host_bytes` subtracts it.
+
+**Minimum build.** Gemma MTP landed in b9549 (PR #23398). The drafter
+fix (#28183, b10742), the vision fix (#28335, b10798) and the
+required-tool-call grammar fix (#29115, b11059) came later. The
+`draft-mtp` probe in the start scripts passes on all of those builds, so
+Gemma carries its own `min_build`, and start refuses anything older.
 
 ## cmd.exe traps found the hard way
 

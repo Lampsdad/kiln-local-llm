@@ -7,6 +7,8 @@
 ::  Usage:   call lib_variants.bat <id>
 ::  Sets:    V_ID V_LABEL V_REPO V_PREFIX V_ALIAS V_UNCENSORED
 ::           V_THIRD_PARTY V_MTP V_VISION V_PARAMS V_QUANTS
+::           V_MTP_FILES V_MMPROJ_FILES V_SPEC_N V_SAMPLING
+::           V_REASONING V_MIN_BUILD
 ::  Returns: errorlevel 1 on an unknown id
 ::
 ::  Deliberately has NO setlocal -- the caller wants these
@@ -20,8 +22,8 @@
 ::
 ::  The hardcoded base/ablit block below is the fallback for one
 ::  case: Python missing on a machine that already has weights on
-::  disk. The smaller families (9b, 4b) are Python-path only --
-::  you could not have downloaded them without Python anyway.
+::  disk. Every other family (9b, 4b, Gemma 4) is Python-path only
+::  -- you could not have downloaded it without Python anyway.
 ::
 ::  Why base and ablit share their MTP head and vision projector:
 ::  huihui-ai's UD-* quants are re-ablations of the same
@@ -43,6 +45,12 @@ set "V_MTP=0"
 set "V_VISION=0"
 set "V_PARAMS="
 set "V_QUANTS="
+set "V_MTP_FILES="
+set "V_MMPROJ_FILES="
+set "V_SPEC_N=3"
+set "V_SAMPLING="
+set "V_REASONING="
+set "V_MIN_BUILD=0"
 
 :: ---- registry lookup ---------------------------------------
 :: %~dp0..\hardware.py -- scripts\windows\ -> scripts\
@@ -105,6 +113,9 @@ goto :v_quants
 :v_quants
 :: Best quality first. Every name here exists in BOTH repos.
 set "V_QUANTS=UD-Q8_K_XL Q8_0 UD-Q6_K_XL UD-Q5_K_XL UD-Q4_K_XL UD-IQ4_XS UD-Q3_K_XL UD-IQ3_S UD-IQ3_XXS UD-Q2_K_XL UD-IQ2_S"
+set "V_MTP_FILES=mtp-Qwen3.8-27B-Q8_0.gguf mtp-Qwen3.8-27B-Q4_0.gguf"
+set "V_MMPROJ_FILES=mmproj-F16.gguf mmproj-Qwen3.8-27B-Q8_0.gguf"
+set "V_SAMPLING=--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0"
 exit /b 0
 
 :: ------------------------------------------------------------
