@@ -183,6 +183,22 @@ def _json(body):
         return None
 
 
+def _auth_error(doc):
+    """True when a reply is the authentication error an API-key guard sends."""
+    err = doc.get("error") if isinstance(doc, dict) else None
+    return isinstance(err, dict) and err.get("type") == "authentication_error"
+
+
+def _served_alias(status, doc):
+    """The alias in a /v1/models reply, or None when it is not llama-server's."""
+    data = doc.get("data") if isinstance(doc, dict) else None
+    if status != 200 or not isinstance(data, list):
+        return None
+    ours = [m for m in data
+            if isinstance(m, dict) and m.get("owned_by") == "llamacpp"]
+    return str(ours[0].get("id", "")) if ours else None
+
+
 def probe(base, key):
     """What answers at base (ending /v1): None if it is not llama-server,
     else a dict with "auth" and, when authorised, "alias", "ctx", "vision".
@@ -190,29 +206,29 @@ def probe(base, key):
     Checking the response rather than the port is the point: anything can
     be listening on 8080 -- a docker container, another dev server -- and
     writing its address into OpenCode would fail on the first prompt.
+
+    The key is held back until a reply has shown what is listening. Whatever
+    else holds the port gets a bare request. llama-server leaves /v1/models
+    public; an older build that guards it answers with an authentication
+    error, the one reply worth repeating with the key.
     """
-    status, body = _get(base + "/models", key)
+    status, body = _get(base + "/models", "")
     doc = _json(body)
-    if not isinstance(doc, dict):
-        return None
-    if status == 401:
-        err = doc.get("error")
-        if isinstance(err, dict) and err.get("type") == "authentication_error":
+    if status == 401 and _auth_error(doc):
+        status, body = _get(base + "/models", key)
+        doc = _json(body)
+        if status == 401 and _auth_error(doc):
             return {"auth": False}
-        return None
-    data = doc.get("data")
-    if status != 200 or not isinstance(data, list):
-        return None
-    ours = [m for m in data
-            if isinstance(m, dict) and m.get("owned_by") == "llamacpp"]
-    if not ours:
+    alias = _served_alias(status, doc)
+    if alias is None:
         return None
 
-    info = {"auth": True, "alias": str(ours[0].get("id", "")), "ctx": 0,
-            "vision": False}
-    # /props sits at the root, not under /v1.
+    # /props sits at the root, not under /v1, and needs the key.
     root = base[:-3] if base.endswith("/v1") else base
     status, body = _get(root + "/props", key)
+    if status == 401:
+        return {"auth": False}
+    info = {"auth": True, "alias": alias, "ctx": 0, "vision": False}
     props = _json(body) if status == 200 else None
     if isinstance(props, dict):
         gen = props.get("default_generation_settings")

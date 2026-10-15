@@ -342,9 +342,13 @@ def roots(plat, port):
 def llama_health(root, key):
     """200 serving, 503 loading -- but only when it is llama-server that
     answers, judged by its replies rather than by the port being open.
-    0 for nothing, or for some other program."""
-    status, body = opencode._get(root + "/health", key)
+    0 for nothing, or for some other program. The key is sent only when an
+    older llama-server asks for it, which is after it has identified itself."""
+    status, body = opencode._get(root + "/health", "")
     doc = opencode._json(body)
+    if status == 401 and opencode._auth_error(doc):
+        status, body = opencode._get(root + "/health", key)
+        doc = opencode._json(body)
     if not isinstance(doc, dict):
         return 0
     if status == 200 and doc.get("status") == "ok":
@@ -370,7 +374,7 @@ def shadowed(port, key):
     127.0.0.1:<port>. Cursor pointed at localhost, and the Cloudflare
     tunnel, which forwards to localhost, would reach that program."""
     root = "http://127.0.0.1:%d" % port
-    return (opencode._get(root + "/health", key)[0] != 0
+    return (opencode._get(root + "/health", "")[0] != 0
             and llama_health(root, key) == 0)
 
 

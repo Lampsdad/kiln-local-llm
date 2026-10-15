@@ -24,6 +24,8 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 sys.dont_write_bytecode = True
 import control  # noqa: E402
 
+KEY = "0123456789abcdef0123456789abcdef"
+
 
 class BuildArgs(unittest.TestCase):
     def ok(self, req, args, env=None):
@@ -99,13 +101,25 @@ class Ports(unittest.TestCase):
 
 
 class Stub(http.server.BaseHTTPRequestHandler):
-    """/health the way llama-server, or some other program, answers."""
+    """/health the way llama-server, or some other program, answers. With
+    guarded, it wants the key, as an older llama-server does. When a test
+    sets seen to a list, each request's Authorization header is added."""
     reply = (200, '{"status": "ok"}')
+    ctype = "application/json"
+    guarded = False
+    seen = None
 
     def do_GET(self):
+        auth = self.headers.get("Authorization")
+        if self.seen is not None:
+            self.seen.append(auth)
         code, body = self.reply
+        if self.guarded and auth != "Bearer " + KEY:
+            code, body = 401, ('{"error": {"code": 401, "message": '
+                               '"Invalid API Key", '
+                               '"type": "authentication_error"}}')
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", self.ctype)
         self.end_headers()
         self.wfile.write(body.encode())
 
@@ -114,8 +128,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
 
 
 class FindingTheServer(unittest.TestCase):
-    def serve(self, reply):
-        handler = type("H", (Stub,), {"reply": reply})
+    def serve(self, reply, **attrs):
+        handler = type("H", (Stub,), dict(attrs, reply=reply))
         httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
@@ -163,6 +177,37 @@ class FindingTheServer(unittest.TestCase):
         self.assertEqual(control.locate("linux", port, ""),
                          ("http://127.0.0.1:%d" % port, 200))
         self.assertEqual(control.locate("linux", _free_port(), "")[1], 0)
+
+    def test_the_key_stays_home_from_other_programs(self):
+        replies = [((200, '{"hello": 1}'), "application/json"),
+                   ((404, "<html>nope</html>"), "text/html")]
+        for reply, ctype in replies:
+            with self.subTest(status=reply[0]):
+                seen = []
+                port = self.serve(reply, ctype=ctype, seen=seen)
+                root = "http://127.0.0.1:%d" % port
+                self.assertEqual(control.llama_health(root, KEY), 0)
+                self.assertTrue(control.shadowed(port, KEY))
+                self.assertTrue(seen)
+                self.assertFalse(any(seen), "the key went out")
+
+    def test_a_public_llama_server_is_never_sent_the_key(self):
+        seen = []
+        port = self.serve((200, '{"status": "ok"}'), seen=seen)
+        root = "http://127.0.0.1:%d" % port
+        self.assertEqual(control.llama_health(root, KEY), 200)
+        self.assertFalse(control.shadowed(port, KEY))
+        self.assertTrue(seen)
+        self.assertFalse(any(seen), "the key went out")
+
+    def test_an_older_llama_server_is_sent_the_key_only_when_it_asks(self):
+        seen = []
+        port = self.serve((200, '{"status": "ok"}'), guarded=True, seen=seen)
+        root = "http://127.0.0.1:%d" % port
+        self.assertEqual(control.llama_health(root, KEY), 200)
+        # Bare first, then the same request with the key once it has
+        # answered with its own kind of 401.
+        self.assertEqual([a is not None for a in seen], [False, True])
 
 
 def _free_port():
