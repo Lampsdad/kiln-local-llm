@@ -415,7 +415,13 @@ class Runner:
             result["error"] = str(e)
             if self._job is not None:
                 tail = self._job.view(0)["text"].strip().splitlines()[-12:]
-                result["log_tail"] = "\n".join(tail)
+                text = "\n".join(tail)
+                # start.bat prints the API key, and this report is saved to
+                # disk and can be copied, so the key comes out of it here.
+                key = opencode.read_key()
+                if key:
+                    text = text.replace(key, "<api key>")
+                result["log_tail"] = text
         return result
 
     def _wait_ready(self, started):

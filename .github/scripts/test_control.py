@@ -14,6 +14,7 @@ import http.server
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -22,6 +23,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 sys.dont_write_bytecode = True
 import control  # noqa: E402
+
+KEY = "0123456789abcdef0123456789abcdef"
 
 
 class BuildArgs(unittest.TestCase):
@@ -98,13 +101,25 @@ class Ports(unittest.TestCase):
 
 
 class Stub(http.server.BaseHTTPRequestHandler):
-    """/health the way llama-server, or some other program, answers."""
+    """/health the way llama-server, or some other program, answers. With
+    guarded, it wants the key, as an older llama-server does. When a test
+    sets seen to a list, each request's Authorization header is added."""
     reply = (200, '{"status": "ok"}')
+    ctype = "application/json"
+    guarded = False
+    seen = None
 
     def do_GET(self):
+        auth = self.headers.get("Authorization")
+        if self.seen is not None:
+            self.seen.append(auth)
         code, body = self.reply
+        if self.guarded and auth != "Bearer " + KEY:
+            code, body = 401, ('{"error": {"code": 401, "message": '
+                               '"Invalid API Key", '
+                               '"type": "authentication_error"}}')
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", self.ctype)
         self.end_headers()
         self.wfile.write(body.encode())
 
@@ -113,8 +128,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
 
 
 class FindingTheServer(unittest.TestCase):
-    def serve(self, reply):
-        handler = type("H", (Stub,), {"reply": reply})
+    def serve(self, reply, **attrs):
+        handler = type("H", (Stub,), dict(attrs, reply=reply))
         httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
@@ -163,6 +178,37 @@ class FindingTheServer(unittest.TestCase):
                          ("http://127.0.0.1:%d" % port, 200))
         self.assertEqual(control.locate("linux", _free_port(), "")[1], 0)
 
+    def test_the_key_stays_home_from_other_programs(self):
+        replies = [((200, '{"hello": 1}'), "application/json"),
+                   ((404, "<html>nope</html>"), "text/html")]
+        for reply, ctype in replies:
+            with self.subTest(status=reply[0]):
+                seen = []
+                port = self.serve(reply, ctype=ctype, seen=seen)
+                root = "http://127.0.0.1:%d" % port
+                self.assertEqual(control.llama_health(root, KEY), 0)
+                self.assertTrue(control.shadowed(port, KEY))
+                self.assertTrue(seen)
+                self.assertFalse(any(seen), "the key went out")
+
+    def test_a_public_llama_server_is_never_sent_the_key(self):
+        seen = []
+        port = self.serve((200, '{"status": "ok"}'), seen=seen)
+        root = "http://127.0.0.1:%d" % port
+        self.assertEqual(control.llama_health(root, KEY), 200)
+        self.assertFalse(control.shadowed(port, KEY))
+        self.assertTrue(seen)
+        self.assertFalse(any(seen), "the key went out")
+
+    def test_an_older_llama_server_is_sent_the_key_only_when_it_asks(self):
+        seen = []
+        port = self.serve((200, '{"status": "ok"}'), guarded=True, seen=seen)
+        root = "http://127.0.0.1:%d" % port
+        self.assertEqual(control.llama_health(root, KEY), 200)
+        # Bare first, then the same request with the key once it has
+        # answered with its own kind of 401.
+        self.assertEqual([a is not None for a in seen], [False, True])
+
 
 def _free_port():
     s = socket.socket()
@@ -170,6 +216,84 @@ def _free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+class JobLogs(unittest.TestCase):
+    """A job's log is deleted when the job ends. On Windows a server the
+    job started can still hold the file open, so a log that will not go is
+    kept and tried again later, rather than left behind for good."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved_tmp = tempfile.tempdir
+        tempfile.tempdir = self.tmp.name
+        self.addCleanup(setattr, tempfile, "tempdir", saved_tmp)
+        saved_windows = control.WINDOWS
+        self.addCleanup(setattr, control, "WINDOWS", saved_windows)
+        control._undeleted_logs.clear()
+        self.addCleanup(control._undeleted_logs.clear)
+        # Stands in for a file that a server holds open.
+        self.refusing = False
+        self.locked = set()
+        real_remove = os.remove
+
+        def remove(path):
+            if self.refusing or path in self.locked:
+                raise PermissionError(13, "The file is in use", path)
+            real_remove(path)
+
+        os.remove = remove
+        self.addCleanup(setattr, os, "remove", real_remove)
+
+    def touch(self, name):
+        path = os.path.join(self.tmp.name, name)
+        open(path, "w").close()
+        return path
+
+    def finished(self, jid):
+        job = control.Job(jid, "get", "t", ["get"])
+        job.start([sys.executable, "-c", "print('hi')"], lambda: None)
+        self.assertEqual(job.wait(20), 0)
+        return job
+
+    def test_a_log_that_will_not_delete_is_tried_again(self):
+        self.refusing = True
+        first = self.finished("1")
+        self.assertTrue(os.path.exists(first.log_path))
+        self.assertEqual(control._undeleted_logs, {first.log_path})
+        self.refusing = False
+        second = self.finished("2")
+        self.assertFalse(os.path.exists(first.log_path))
+        self.assertFalse(os.path.exists(second.log_path))
+        self.assertEqual(control._undeleted_logs, set())
+
+    def test_shutdown_tries_the_kept_logs_again(self):
+        self.refusing = True
+        job = self.finished("1")
+        self.refusing = False
+        control.Control().shutdown()
+        self.assertFalse(os.path.exists(job.log_path))
+
+    def test_windows_sweeps_logs_that_earlier_runs_left(self):
+        old = self.touch("kiln-job-old.log")
+        held = self.touch("kiln-job-held.log")
+        other = self.touch("notes.log")
+        self.locked.add(held)
+        control.WINDOWS = True
+        control.Control()
+        self.assertFalse(os.path.exists(old))
+        # Still held by something: skipped, and kept for a later try.
+        self.assertTrue(os.path.exists(held))
+        self.assertTrue(os.path.exists(other))
+        self.assertEqual(control._undeleted_logs, {held})
+
+    def test_unix_does_not_sweep_at_startup(self):
+        # Another kiln tui may be writing its log right now.
+        stale = self.touch("kiln-job-stale.log")
+        control.WINDOWS = False
+        control.Control()
+        self.assertTrue(os.path.exists(stale))
 
 
 class NextStep(unittest.TestCase):

@@ -9,7 +9,7 @@
 #    ./kiln.sh get [VARIANT|both]
 #    ./kiln.sh start [VARIANT] [--no-mtp]
 #    ./kiln.sh stop           stop server and tunnel
-#    ./kiln.sh key [show|rotate]
+#    ./kiln.sh key [show|rotate|set KEY]
 #    ./kiln.sh opencode       list the local models in OpenCode
 #    ./kiln.sh pi             list the local models in pi
 #    ./kiln.sh self-update    update kiln itself from GitHub
@@ -296,7 +296,8 @@ usage() {
                      serve a model to Cursor; --no-mtp trades the
                      MTP draft head for a larger context window
    stop              stop llama-server and cloudflared
-   key [show|rotate] the API key Cursor needs
+   key [show|rotate|set KEY]
+                     the API key Cursor needs; set KEY uses yours instead
    opencode          list the local models in OpenCode on this machine
                      (--print to preview, --remove to undo,
                      --url URL to pin the server address)
@@ -383,16 +384,48 @@ case "$CMD" in
         kiln_stop_tunnel "$port" && echo " stopped cloudflared" || true
         ;;
     key)
-        [ "$ARG" = rotate ] && rm -f ./api_key.txt
-        # shellcheck source=scripts/unix/lib_api_key.sh
-        . "$UNIX/lib_api_key.sh"
-        echo
-        echo " API key -- paste into Cursor's OpenAI API Key field"
-        echo
-        echo "   $API_KEY"
-        echo
-        echo " Stored in api_key.txt, readable only by you."
-        echo
+        case "$ARG" in
+            set)
+                # Your own key in place of the generated one, as kiln.bat does.
+                # llama-server compares it verbatim, so any single line will do.
+                # An empty value is no key at all, and a line break is cut off
+                # when the file is read back, so neither is accepted.
+                VALUE="${3:-}"
+                case "$VALUE" in
+                    "")
+                        echo "usage: kiln key set KEY" >&2
+                        exit 1
+                        ;;
+                    *$'\n'*|*$'\r'*)
+                        echo "usage: kiln key set KEY  (one line, no line breaks)" >&2
+                        exit 1
+                        ;;
+                esac
+                ( umask 077; printf '%s' "$VALUE" > ./api_key.txt ) ||
+                    { echo "kiln: could not write api_key.txt" >&2; exit 1; }
+                # A write keeps the mode of a file that already exists, which
+                # may be world-readable, so lock it down again.
+                chmod 600 ./api_key.txt 2>/dev/null || true
+                echo " key set"
+                echo " Restart the server to load it."
+                ;;
+            ""|show|rotate)
+                [ "$ARG" = rotate ] && rm -f ./api_key.txt
+                # shellcheck source=scripts/unix/lib_api_key.sh
+                . "$UNIX/lib_api_key.sh"
+                echo
+                echo " API key -- paste into Cursor's OpenAI API Key field"
+                echo
+                echo "   $API_KEY"
+                echo
+                echo " Stored in api_key.txt, readable only by you."
+                echo
+                ;;
+            *)
+                echo "usage: kiln key [show|rotate|set KEY]" >&2
+                exit 1
+                ;;
+        esac
         ;;
     hardware|hw)
         # Its own command rather than more rows on the board: this is
