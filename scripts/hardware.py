@@ -783,12 +783,35 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
     return None
 
 
+def _roomiest(vram_mib, family_ids):
+    """The configuration with the largest window across the quants of
+    these families, under the bar or not, or None if nothing loads."""
+    roomiest = None
+    for fam_id in family_ids:
+        for quant, _ in MODELS[fam_id]["quants"]:
+            plan = plan_for(vram_mib, fam_id, quant=quant)
+            if plan and (roomiest is None or plan["ctx"] > roomiest["ctx"]):
+                roomiest = plan
+    if roomiest:
+        roomiest["below_min"] = True
+    return roomiest
+
+
 def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
               order=None):
     """What this machine should download and run. `order` is the
     families to choose from, best first; FAMILY_ORDER unless given."""
     if family:
+        # The same two fallbacks as below, within this family only.
         plan = plan_for(vram_mib, family, quant)
+        if not plan:
+            plan = plan_for(vram_mib, family, quant, quality_floor=False)
+            if plan:
+                plan["below_quality"] = True
+        # A pinned quant that loads nowhere stays unloadable: another quant
+        # would not be the one that was asked for.
+        if not plan and not quant:
+            plan = _roomiest(vram_mib, [family])
         if plan:
             plan["forced"] = True
         return plan
@@ -813,15 +836,7 @@ def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
             plan["below_quality"] = True
             return plan
 
-    roomiest = None
-    for fam_id in families:
-        for quant, _ in MODELS[fam_id]["quants"]:
-            plan = plan_for(vram_mib, fam_id, quant=quant)
-            if plan and (roomiest is None or plan["ctx"] > roomiest["ctx"]):
-                roomiest = plan
-    if roomiest:
-        roomiest["below_min"] = True
-    return roomiest
+    return _roomiest(vram_mib, families)
 
 
 # ---------------------------------------------------------------
@@ -906,6 +921,7 @@ def cmd_recommend(args):
         ("REC_THIRD_PARTY", 1 if fam.get("third_party") else 0),
         ("REC_TOTAL_GB", "%.1f" % (total / 1e9)),
         ("REC_BELOW_MIN", 1 if plan.get("below_min") else 0),
+        ("REC_BELOW_QUALITY", 1 if plan.get("below_quality") else 0),
         ("REC_MIN_CTX", MIN_CTX),
     ]
     emit(rows)
@@ -1093,7 +1109,7 @@ def cmd_quants(args):
     # still mark the best quant WITHIN this family, so the menu always
     # has a sensible default.
     if rec_quant is None and vram:
-        own = plan_for(vram, fam_id)
+        own = recommend(vram, family=fam_id)
         rec_quant = own["quant"] if own else None
 
     for quant, qbytes in fam["quants"]:
