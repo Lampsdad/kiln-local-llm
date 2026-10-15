@@ -37,6 +37,8 @@ fi
 
 # ── API key (the tunnel URL is public — see lib_api_key.sh) ──
 . "$SCRIPT_DIR/lib_api_key.sh"
+# kiln's own tunnel, found by the port it forwards to.
+. "$SCRIPT_DIR/lib_tunnel.sh"
 
 # ── per-family flags: sampling, MTP head, vision (lib_select.sh) ─
 kiln_model_args "$BINARY"
@@ -99,7 +101,7 @@ if [ -n "${KILN_NO_TUNNEL:-}" ] || ! command -v cloudflared &>/dev/null; then
         # This script leaves the tunnel up across restarts for a stable
         # URL, so one may still be forwarding to this port. No tunnel
         # means none.
-        pkill -f "cloudflared tunnel --url http://127.0.0.1:${PORT}" 2>/dev/null || true
+        kiln_stop_tunnel "$PORT" || true
         echo "Tunnel skipped (KILN_NO_TUNNEL) -- no public URL."
     else
         echo "WARNING: cloudflared not found. Skipping tunnel."
@@ -112,15 +114,13 @@ if [ -n "${KILN_NO_TUNNEL:-}" ] || ! command -v cloudflared &>/dev/null; then
 fi
 
 echo "Starting Cloudflare tunnel (skip if already running — see start-cloudflared-once.sh)..."
-if pgrep -f "cloudflared tunnel --url http://127.0.0.1:${PORT}" >/dev/null 2>&1; then
+if [ -n "$(kiln_tunnel_pids "$PORT")" ]; then
     echo "cloudflared already running; URL unchanged."
     if [ -f "./cloudflared.url" ]; then cat "./cloudflared.url"; fi
     CF_PID=""
 else
-# 127.0.0.1, not localhost: the pgrep above and
-# start-cloudflared-once.sh both match on that literal string, so a
-# mismatch here meant this script never recognised its own tunnel --
-# every run started a second one and the URL changed anyway.
+# 127.0.0.1, not localhost: start-cloudflared-once.sh matches on that
+# literal string. (lib_tunnel.sh accepts either.)
 cloudflared tunnel --url "http://127.0.0.1:$PORT" >"$CF_LOG" 2>&1 &
 CF_PID=$!
 sleep 12

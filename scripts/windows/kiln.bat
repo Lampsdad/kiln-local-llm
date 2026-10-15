@@ -436,7 +436,11 @@ set "HIT=0"
 tasklist /FI "IMAGENAME eq llama-server.exe" 2>nul | findstr /I "llama-server.exe" >nul
 if not errorlevel 1 set "HIT=1"
 taskkill /F /IM llama-server.exe >nul 2>&1
-taskkill /F /IM cloudflared.exe  >nul 2>&1
+:: Only kiln's own tunnel, the one to start.bat's port 8080. Other
+:: cloudflared.exe processes, such as a named tunnel run as a service,
+:: are not ours to stop.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_tunnel.ps1" -Port 8080 -Stop
+if not errorlevel 1 set "HIT=1"
 if "%HIT%"=="1" (
     echo   %C_OK%stopped%C_0%
 ) else (

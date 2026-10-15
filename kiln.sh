@@ -351,7 +351,12 @@ case "$CMD" in
         ;;
     stop)
         pkill -x llama-server 2>/dev/null && echo " stopped llama-server" || echo " llama-server was not running"
-        pkill -x cloudflared  2>/dev/null && echo " stopped cloudflared"  || true
+        # Only kiln's own tunnel: other cloudflared processes, such as
+        # a named tunnel or T3 Code's remote access, are left running.
+        # shellcheck source=scripts/unix/lib_tunnel.sh
+        . "$UNIX/lib_tunnel.sh"
+        port="$(sed -n 's/^PORT=\([0-9][0-9]*\)$/\1/p' "$START" 2>/dev/null | head -1)"
+        kiln_stop_tunnel "${port:-8080}" && echo " stopped cloudflared" || true
         ;;
     key)
         [ "$ARG" = rotate ] && rm -f ./api_key.txt

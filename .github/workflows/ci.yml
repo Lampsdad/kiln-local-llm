@@ -72,6 +72,11 @@ jobs:
       - name: control
         run: python3 .github/scripts/test_control.py
 
+      # kiln stop used to pkill every cloudflared; these pin that it
+      # stops only the quick tunnel to kiln's own port.
+      - name: kiln's own tunnel
+        run: python3 .github/scripts/test_tunnel.py
+
       - name: benchmark
         run: python3 .github/scripts/test_bench.py
 

@@ -83,6 +83,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `kiln opencode` and `kiln pi` make, and the temporary file each write
   goes through, start with the mode of the file they copy, so a config
   readable only by you never sits in a readable copy.
+- **`kiln stop` stops only kiln's tunnel.** It, the macOS and Fedora
+  start scripts and the Slurm job ran `pkill -x cloudflared`, and on
+  Windows `kiln stop` and `kiln start` ran `taskkill /IM cloudflared.exe`.
+  That stopped every cloudflared on the machine: a named tunnel, a
+  tunnel run as a Windows service, or T3 Code's remote access. kiln now
+  stops only the quick tunnel to its own port, matched by its command
+  line, through `scripts/unix/lib_tunnel.sh` and
+  `scripts/windows/kiln_tunnel.ps1`. `kiln tui` uses the same rule
+  before it shows a tunnel URL, so another program's tunnel no longer
+  makes an old URL look live.
 - **`./kiln.sh get` on Fedora and Debian.** A plain `pip install` into
   the system Python is refused there. The download uses `huggingface_hub`
   when it is already installed, and otherwise installs it for the user.

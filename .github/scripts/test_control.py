@@ -148,7 +148,7 @@ class FindingTheServer(unittest.TestCase):
     def test_a_stopped_server_behind_another_program_gets_a_way_past(self):
         saved = control.processes
         self.addCleanup(setattr, control, "processes", saved)
-        control.processes = lambda plat: (False, False)
+        control.processes = lambda plat, port: (False, False)
         port = self.serve((200, "<html>OpenTDF</html>"))
         facts = control.server_facts("windows", port, "")
         self.assertEqual((facts["state"], facts["shadowed"]),

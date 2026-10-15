@@ -26,7 +26,10 @@ BINARY="./llama-bin/llama-server"
 LOG="./server.log"
 CF_LOG="./cloudflared.log"
 
-pkill -x cloudflared 2>/dev/null || true
+# Only the tunnel to this job's port: other cloudflared processes on a
+# shared node are not ours.
+. ./scripts/unix/lib_tunnel.sh
+kiln_stop_tunnel "$PORT" || true
 
 # This binds 0.0.0.0 on a shared cluster node, so the key is not
 # optional here — anyone who can reach the node can reach the API.
