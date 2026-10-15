@@ -2,8 +2,8 @@
 # ============================================================
 #  Install a current llama.cpp build into ./llama-bin.
 #
-#  Sourced by install_fedora.sh and install_linux.sh. The caller
-#  has already cd'd to the repo root.
+#  Sourced by install_fedora.sh, install_linux.sh and
+#  install_mac.sh. The caller has already cd'd to the repo root.
 #
 #    kiln_install_llama_bin auto     NVIDIA: CUDA build matched to
 #                                    the driver, plus the cudart
@@ -12,6 +12,11 @@
 #    kiln_install_llama_bin vulkan   Vulkan, then CPU. Not for WSL:
 #                                    its Vulkan sees no GPU, so Vulkan
 #                                    is the wrong package there.
+#    kiln_install_llama_bin macos ARCH
+#                                    arm64: the Metal build. Any
+#                                    other ARCH gets the x64 build,
+#                                    which upstream compiles without
+#                                    Metal, so Intel runs on the CPU.
 #
 #  GitHub's /releases/latest is the v0.x stable line, which ships
 #  no llama-server tarball. The nightly builds are still tagged
@@ -22,10 +27,15 @@
 #  by default, so those libs have to sit beside llama-server or
 #  the binary loads and then cannot see the GPU. The matching
 #  cudart-llama-*-bin-ubuntu-cuda-*-x64.tar.gz is that set.
+#
+#  The macOS tarball needs nothing extra. Its dylibs sit beside
+#  llama-server, linked as @rpath/libggml-metal.0.dylib and so on
+#  with @rpath = @loader_path, and the .0.dylib names are symlinks.
+#  So the folder is copied whole with cp -a, which keeps them.
 # ============================================================
 
 kiln_install_llama_bin() {
-    local mode="${1:-auto}"
+    local mode="${1:-auto}" arch="${2:-}"
     if [ -f "llama-bin/llama-server" ]; then
         echo "[OK] llama-bin/ already populated, skipping download."
         return 0
@@ -58,8 +68,9 @@ kiln_install_llama_bin() {
     local plan
     plan="$(printf '%s' "$rel_json" | "$py" -c '
 import json, re, sys
-mode, cuda = sys.argv[1], sys.argv[2]
+mode, cuda, arch = sys.argv[1], sys.argv[2], sys.argv[3]
 rels = json.load(sys.stdin)
+plat = "macos" if mode == "macos" else "ubuntu"
 
 def ver(s):
     return tuple(int(x) for x in s.split(".") if x.isdigit())
@@ -68,7 +79,7 @@ for rel in rels:
     if not str(rel.get("tag_name", "")).startswith("b"):
         continue
     assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets") or []}
-    if not any("ubuntu" in n for n in assets):
+    if not any(plat in n for n in assets):
         continue
 
     def find(pat):
@@ -100,6 +111,15 @@ for rel in rels:
         return name, cudart
 
     kind, bin_name, cudart_name = "", "", ""
+    if mode == "macos":
+        # Only arm64 is built with Metal. The x64 tarball has no
+        # libggml-metal, so an Intel Mac gets a CPU build.
+        if arch == "arm64":
+            bin_name, kind = find(r"^llama-b\d+-bin-macos-arm64\.tar\.gz$"), "metal"
+        else:
+            bin_name, kind = find(r"^llama-b\d+-bin-macos-x64\.tar\.gz$"), "cpu"
+        if not bin_name:
+            continue
     if mode == "auto" and cuda:
         bin_name, cudart_name = cuda_pair()
         kind = "cuda" if bin_name else ""
@@ -120,8 +140,12 @@ for rel in rels:
         print("CUDART=" + assets[cudart_name])
     raise SystemExit(0)
 sys.exit(1)
-' "$mode" "$cuda")" || {
-        echo "ERROR: no Ubuntu x64 llama.cpp build in the newest releases."
+' "$mode" "$cuda" "$arch")" || {
+        if [ "$mode" = macos ]; then
+            echo "ERROR: no macOS $arch llama.cpp build in the newest releases."
+        else
+            echo "ERROR: no Ubuntu x64 llama.cpp build in the newest releases."
+        fi
         echo "       https://github.com/ggml-org/llama.cpp/releases"
         return 1
     }

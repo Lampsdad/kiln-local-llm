@@ -90,6 +90,12 @@ jobs:
       - name: kiln path
         run: python3 .github/scripts/test_path.py
 
+      # Every Unix setup fetches llama.cpp through lib_llama_bin.sh; these
+      # pin that it takes a bNNNN build for the right platform, never
+      # /releases/latest, and that a Mac gets Metal only on Apple Silicon.
+      - name: llama.cpp download
+        run: python3 .github/scripts/test_llama_bin.py
+
   tui:
     name: kiln tui
     runs-on: ubuntu-latest
