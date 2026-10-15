@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 import io
 import os
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -226,6 +228,51 @@ class FakeControl:
         job.start([sys.executable, "-c", "print(%r)" % self.output],
                   lambda: None)
         return job
+
+
+class CountingControl(FakeControl):
+    def __init__(self):
+        FakeControl.__init__(self)
+        self.shutdowns = 0
+
+    def shutdown(self):
+        self.shutdowns += 1
+        return []
+
+
+# Run in a child process: starts the app headless with one fake download
+# running, and says "ready" once the app has started watching for signals.
+# Textual swallows print() while an app runs, so the harness writes to the
+# descriptor itself.
+HANGUP_HARNESS = """
+import os
+import sys
+sys.path[:0] = %r
+import control, test_tui, tui_app
+
+def say(text):
+    os.write(1, (text + "\\n").encode())
+
+class Job:
+    action = "get"
+    title = "Download"
+    running = True
+
+    def cancel(self):
+        say("cancelled")
+
+class Ctl(test_tui.FakeControl):
+    shutdown = control.Control.shutdown
+
+    def status(self):
+        say("ready")
+        return test_tui.FakeControl.status(self)
+
+ctl = Ctl()
+ctl.jobs["1"] = Job()
+tui_app.KilnApp(ctl).run(headless=True)
+say("exited")
+"""
 
 
 @unittest.skipUnless(HAVE_TEXTUAL, "Textual is not installed")
@@ -441,6 +488,86 @@ class App(unittest.TestCase):
             self.assertFalse(screen.runner.stopped.is_set())
             screen.runner.cancel()
         self.drive(go)
+
+    def test_quitting_stops_the_jobs_once(self):
+        async def go(app, pilot):
+            await pilot.press("q")
+            await pilot.pause(0.2)
+        ctl = CountingControl()
+        app, _ = self.drive(go, ctl)
+        self.assertFalse(app.is_running)
+        app.stop_jobs()
+        self.assertEqual(ctl.shutdowns, 1)
+
+    def test_the_interpreter_exiting_does_not_stop_the_jobs_twice(self):
+        # main() hands stop_jobs to atexit, so whatever ends the app,
+        # an uncaught error included, runs it once more at the end.
+        ctl = CountingControl()
+        with mock.patch.object(self.tui_app.control, "Control",
+                               return_value=ctl), \
+                mock.patch.object(self.tui_app.KilnApp, "run"), \
+                mock.patch.object(self.tui_app.atexit, "register") as reg:
+            self.assertEqual(self.tui_app.main([]), 0)
+        stop, = reg.call_args[0]
+        stop()
+        stop()
+        self.assertEqual(ctl.shutdowns, 1)
+
+    def test_only_the_events_that_close_the_window_stop_the_jobs(self):
+        stops = []
+
+        def stop():
+            stops.append(True)
+
+        self.assertFalse(self.tui_app.closing_event(0, stop))  # Ctrl+C
+        self.assertEqual(stops, [])
+        for event in (2, 5, 6):   # close, logoff, shutdown
+            self.assertTrue(self.tui_app.closing_event(event, stop))
+        self.assertEqual(len(stops), 3)
+
+    @unittest.skipUnless(os.name == "nt", "a Windows console handler")
+    def test_the_console_close_hook_is_registered_and_stops_the_jobs(self):
+        import ctypes
+        stops = []
+
+        def stop():
+            stops.append(True)
+
+        hook = self.tui_app.console_close_hook(stop)
+        self.addCleanup(ctypes.windll.kernel32.SetConsoleCtrlHandler,
+                        hook, False)
+        self.assertTrue(hook(2))       # called directly, no event sent
+        self.assertEqual(stops, [True])
+
+    @unittest.skipIf(os.name == "nt", "SIGHUP and SIGTERM are Unix signals")
+    def test_hangup_and_term_stop_the_jobs_and_the_app_exits(self):
+        # A closed terminal sends SIGHUP; kill sends SIGTERM. Either must
+        # cancel the download, which runs in its own session and would
+        # otherwise go on unseen, and then leave cleanly.
+        here = os.path.dirname(os.path.abspath(__file__))
+        harness = HANGUP_HARNESS % ([here, os.path.join(ROOT, "scripts")],)
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signal=sig.name):
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", harness], stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, universal_newlines=True)
+                # If the child never says ready, the watchdog stops it so
+                # the test fails instead of waiting forever.
+                watchdog = threading.Timer(60, proc.kill)
+                watchdog.start()
+                try:
+                    if proc.stdout.readline().strip() != "ready":
+                        proc.kill()
+                        self.fail("harness did not start: "
+                                  + proc.communicate()[1])
+                    os.kill(proc.pid, sig)
+                    out, err = proc.communicate(timeout=60)
+                finally:
+                    watchdog.cancel()
+                    proc.kill()
+                lines = [x for x in out.splitlines() if x != "ready"]
+                self.assertEqual(lines, ["cancelled", "exited"], err)
+                self.assertEqual(proc.returncode, 0, err)
 
 
 if __name__ == "__main__":

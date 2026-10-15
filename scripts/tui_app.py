@@ -11,10 +11,14 @@ never parsed as markup: a model name or a log line with brackets in it
 must not restyle, or hide, what is on screen.
 """
 
+import asyncio
+import atexit
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 
 from rich.console import Group
 from rich.table import Table
@@ -635,6 +639,31 @@ SERVER_STATES = {
     "foreign": ("✗ port taken by another program", "error"),
 }
 
+# Console events that mean the window is going rather than a key being
+# pressed: its close button, logoff, and shutdown. Windows gives the
+# process about five seconds after each.
+CLOSING_EVENTS = (2, 5, 6)
+
+
+def closing_event(event, stop):
+    """The body of a Windows console control handler: runs stop for the
+    events that close the window, and says whether it handled the event."""
+    if event not in CLOSING_EVENTS:
+        return False
+    stop()
+    return True
+
+
+def console_close_hook(stop):
+    """Registers closing_event with Windows. The caller must keep the
+    returned callback, or ctypes frees it and Windows calls nothing."""
+    import ctypes
+    from ctypes import wintypes
+    handler = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(
+        lambda event: closing_event(event, stop))
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
+    return handler
+
 
 class KilnApp(App):
     TITLE = "kiln"
@@ -746,6 +775,9 @@ class KilnApp(App):
         self.partial = ""
         self.job_seen_running = False
         self.narrow = False
+        self._jobs_stopped = False
+        self._jobs_lock = threading.Lock()
+        self._close_hook = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -770,6 +802,14 @@ class KilnApp(App):
         self.query_one("#models", DataTable).focus()
         say(self.query_one("#log", RichLog),
             "Output from each action appears here. Press ? for every key.")
+        # Closing the terminal, or a kill, must not leave a download or a
+        # setup running where nobody can see it or cancel it.
+        if control.WINDOWS:
+            self._close_hook = console_close_hook(self.stop_jobs)
+        else:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGHUP, signal.SIGTERM):
+                loop.add_signal_handler(sig, self.quit_on_signal)
         self.refresh_status()
         self.set_interval(POLL_STATUS, self.refresh_status)
         self.set_interval(POLL_JOB, self.poll_job)
@@ -1289,11 +1329,30 @@ class KilnApp(App):
         else:
             self.quit_now()
 
+    def stop_jobs(self):
+        """Cancel what nobody will be able to watch. Runs once: quitting
+        does it, and so does every other way out of the app. A model that
+        is serving keeps serving."""
+        with self._jobs_lock:
+            if self._jobs_stopped:
+                return []
+            self._jobs_stopped = True
+        return self.ctl.shutdown()
+
+    def quit_on_signal(self):
+        # The terminal has gone (SIGHUP), or something asked for a stop
+        # (SIGTERM). Leave the way q does, so nothing is left running.
+        self.stop_jobs()
+        self.exit()
+
     def quit_now(self):
-        self.ctl.shutdown()
+        self.stop_jobs()
         self.exit()
 
 
 def main(argv=None):
-    KilnApp().run()
+    app = KilnApp()
+    # However the app ends, an uncaught error included, the jobs stop.
+    atexit.register(app.stop_jobs)
+    app.run()
     return 0
