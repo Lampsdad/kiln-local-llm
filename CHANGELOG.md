@@ -67,6 +67,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Linux and WSL setup give an NVIDIA card the CUDA build.** Newer
+  `nvidia-smi` prints `CUDA UMD Version: 13.4` where it printed `CUDA
+  Version: 13.4`, so setup read no CUDA version and fell back to Vulkan
+  on every NVIDIA card. `./kiln.sh setup` on Ubuntu and WSL also asked
+  for Vulkan outright. Under WSL that build sees no GPU and runs the
+  model on the CPU, while CUDA passes straight through: on a 5090 the
+  WSL CUDA build matched the Windows one. Setup now takes the CUDA
+  build when there is an NVIDIA driver, and Vulkan, then CPU, otherwise.
+  An existing `llama-bin/` is kept, so move it aside and re-run setup
+  to switch.
 - **Fedora setup no longer downloads a Vulkan build from `/releases/latest`.**
   That URL is the empty v0.x line, so `./kiln.sh setup` on Fedora found
   nothing. An NVIDIA card now gets the Ubuntu CUDA build whose toolkit
