@@ -266,7 +266,9 @@ echo.
 
 :: ---- stop anything already running ----
 echo Stopping any existing instances...
-taskkill /F /IM llama-server.exe >nul 2>&1
+:: Only the server on this port. Other llama-server.exe processes are
+:: not ours. See kiln_server.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port %PORT% -Stop >nul 2>&1
 :: Only the tunnel to this port; other cloudflared.exe processes are
 :: not ours. See kiln_tunnel.ps1.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_tunnel.ps1" -Port %PORT% -Stop >nul 2>&1
@@ -363,13 +365,16 @@ if not errorlevel 1 goto ready
 :: grepping the log for "error" -- llama.cpp emits plenty of benign
 :: lines containing that word, and a false positive would abort a
 :: perfectly good startup.
-tasklist /FI "IMAGENAME eq llama-server.exe" 2>nul | findstr /I "llama-server.exe" >nul
+:: Only the server on this port counts, so another llama-server.exe
+:: running elsewhere cannot hide this one dying. See kiln_server.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kiln_server.ps1" -Port %PORT% >nul 2>&1
 if errorlevel 1 (
     echo.
     call :clearline
     echo  ERROR: llama-server exited during startup. Last lines of %LOG%:
     echo ------------------------------------------------------------
-    powershell -NoProfile -Command "if (Test-Path '%LOG%') { Get-Content '%LOG%' -Tail 30 } else { 'no log written' }"
+    set "KILN_PS_FILE=%CD%\%LOG%"
+    powershell -NoProfile -Command "if (Test-Path -LiteralPath $env:KILN_PS_FILE) { Get-Content -LiteralPath $env:KILN_PS_FILE -Tail 30 } else { 'no log written' }"
     echo ------------------------------------------------------------
     echo.
     echo  Common causes:
@@ -417,8 +422,15 @@ if not exist "%CF_EXE%" (
 )
 
 echo Starting Cloudflare tunnel...
+:: Paths go in through the environment: a ' in the folder name would
+:: end the PowerShell string. They are made absolute first, because a
+:: relative path resolves against the wrong folder when the checkout's
+:: path holds [ ] (PowerShell falls back to its own system folder).
+set "KILN_PS_EXE=%CF_EXE%"
+set "KILN_PS_OUT=%CD%\cloudflared.log"
+set "KILN_PS_ERR=%CD%\%CF_LOG%"
 powershell -NoProfile -Command ^
-    "Start-Process -FilePath '%CF_EXE%' -ArgumentList 'tunnel','--url','http://localhost:%PORT%' -RedirectStandardOutput '%CD%\cloudflared.log' -RedirectStandardError '%CD%\%CF_LOG%' -WindowStyle Hidden"
+    "Start-Process -FilePath $env:KILN_PS_EXE -ArgumentList 'tunnel','--url','http://localhost:%PORT%' -RedirectStandardOutput $env:KILN_PS_OUT -RedirectStandardError $env:KILN_PS_ERR -WindowStyle Hidden"
 
 echo Waiting for tunnel URL...
 set /a TTRIES=0
@@ -435,8 +447,9 @@ if %TTRIES% GEQ 40 (
 goto tunnel_loop
 
 :got_tunnel
+set "KILN_PS_FILE=%CD%\%CF_LOG%"
 for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command ^
-    "(Select-String -Path '%CF_LOG%' -Pattern 'https://\S+trycloudflare\.com').Matches.Value | Select-Object -Last 1"`) do set TUNNEL_URL=%%U
+    "(Select-String -LiteralPath $env:KILN_PS_FILE -Pattern 'https://\S+trycloudflare\.com').Matches.Value | Select-Object -Last 1"`) do set TUNNEL_URL=%%U
 
 echo.
 echo ============================================================

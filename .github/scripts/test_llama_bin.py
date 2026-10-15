@@ -16,6 +16,7 @@ are the ones llama.cpp published for b11669.
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -63,7 +64,7 @@ def add(tar, name, data=b"", mode=0o644, link=None):
     tar.addfile(info, None if link else io.BytesIO(data))
 
 
-def build_tarball(path, name):
+def build_tarball(path, name, server=SERVER):
     """The layout of llama.cpp's tarballs: one llama-bNNNN/ folder holding
     llama-server and its libraries. On macOS each dylib is a versioned
     file plus symlinks, and only the arm64 build has a Metal backend."""
@@ -75,7 +76,7 @@ def build_tarball(path, name):
     if name.endswith("-macos-arm64.tar.gz"):
         libs.append("ggml-metal")
     with tarfile.open(path, "w:gz") as tar:
-        add(tar, top + "llama-server", SERVER.encode(), 0o755)
+        add(tar, top + "llama-server", server.encode(), 0o755)
         for lib in libs:
             add(tar, top + "lib%s.0.27.0.dylib" % lib, lib.encode())
             add(tar, top + "lib%s.0.dylib" % lib, link="lib%s.0.27.0.dylib" % lib)
@@ -102,6 +103,15 @@ if out:
 else:
     sys.stdout.write(open(src).read())
 ''' % sys.executable
+
+# Real mv, except that moving the staged build into place fails when the
+# fixtures folder holds a fail-mv marker.
+MV = r'''#!/bin/sh
+if [ -e "$FIXTURES/fail-mv" ] && [ "${1##*/}" = out ]; then
+    exit 1
+fi
+exec %s "$@"
+'''
 
 
 @unittest.skipIf(sys.platform == "win32", "lib_llama_bin.sh is the macOS/Linux half")
@@ -209,6 +219,69 @@ class Install(unittest.TestCase):
         self.assertIn("b11670 (vulkan)", r.stdout)
         self.assertEqual(self.requests()[-1],
                          URL % ("b11670", "llama-b11670-bin-ubuntu-vulkan-x64.tar.gz"))
+
+    def test_a_windows_build_is_refused_before_any_download(self):
+        os.makedirs(self.bin())
+        with open(self.bin("llama-server.exe"), "w") as fh:
+            fh.write("windows")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("holds the Windows build", r.stdout)
+        self.assertIn("git clone https://github.com/Lampsdad/kiln-local-llm ~/kiln-local-llm",
+                      r.stdout)
+        self.assertIn("mv llama-bin llama-bin-windows", r.stdout)
+        self.assertEqual(self.requests(), [])
+        with open(self.bin("llama-server.exe")) as fh:
+            self.assertEqual(fh.read(), "windows")
+
+    def test_an_installed_build_replaces_the_old_one_cleanly(self):
+        os.makedirs(self.bin())
+        with open(self.bin("marker.txt"), "w") as fh:
+            fh.write("old")
+        r = self.install("vulkan")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(self.bin("marker.txt")))
+        self.assertTrue(os.path.isfile(self.bin("llama-server")))
+        self.assertEqual([n for n in os.listdir(self.root) if n.startswith("llama-bin")],
+                         ["llama-bin"])
+
+    def test_a_failed_move_puts_the_old_build_back(self):
+        self.write_stub("mv", MV % shutil.which("mv"))
+        os.makedirs(self.bin())
+        with open(self.bin("marker.txt"), "w") as fh:
+            fh.write("old")
+        with open(os.path.join(self.fix, "fail-mv"), "w"):
+            pass
+        r = self.install("vulkan")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("The previous llama-bin/ is back in place", r.stdout)
+        with open(self.bin("marker.txt")) as fh:
+            self.assertEqual(fh.read(), "old")
+        self.assertEqual([n for n in os.listdir(self.root) if n.startswith("llama-bin")],
+                         ["llama-bin"])
+
+    def test_a_failing_nvidia_smi_falls_back_with_a_warning(self):
+        self.write_stub("nvidia-smi", "#!/bin/sh\n"
+                        "echo 'Failed to initialize NVML: driver/library version mismatch' >&2\n"
+                        "exit 9\n")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WARNING: could not read the driver's CUDA version", r.stdout)
+        self.assertIn("b11670 (vulkan)", r.stdout)
+
+    def test_a_long_help_text_still_advertises_mtp(self):
+        # About 200 KB of help, with draft-mtp in the first line. A pipe to
+        # grep -q would cut the server off partway and report no MTP.
+        big = r"""#!/bin/sh
+echo '  --spec-type [none|ngram|draft-mtp]'
+head -c 200000 /dev/zero | tr '\0' 'x'
+echo
+"""
+        build_tarball(os.path.join(self.fix, "llama-b11670-bin-ubuntu-vulkan-x64.tar.gz"),
+                      "llama-b11670-bin-ubuntu-vulkan-x64.tar.gz", server=big)
+        r = self.install("vulkan")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("does not advertise draft-mtp", r.stdout)
 
 
 class SetupUsesIt(unittest.TestCase):

@@ -10,6 +10,9 @@ to come back off when the tunnel stops.
     cursor_sync.py down
     cursor_sync.py status
 
+up records the OpenAI base URL and toggle Cursor had before it. down puts
+them back, but only while Cursor still points at a kiln tunnel.
+
 The OpenAI key Cursor already saved stays where it is. It is encrypted
 with the desktop's safeStorage and this script does not try to replace it.
 """
@@ -119,15 +122,6 @@ def apply_up(data, url, model):
     return base
 
 
-def apply_down(data):
-    data["useOpenAIKey"] = False
-    current = data.get("openAIBaseUrl") or ""
-    host = urlparse(current).hostname or ""
-    if host.endswith(".trycloudflare.com"):
-        data["openAIBaseUrl"] = ""
-    return data.get("openAIBaseUrl") or ""
-
-
 def connect(db):
     if not Path(db).is_file():
         raise SystemExit("kiln: Cursor state database not found: %s" % db)
@@ -166,6 +160,44 @@ def host_of(url):
     return urlparse(url or "").hostname or ""
 
 
+def points_at_kiln(data):
+    return host_of(data.get("openAIBaseUrl")).endswith(".trycloudflare.com")
+
+
+def prior_path(db):
+    """Where up keeps the user's own OpenAI settings until down restores them.
+
+    The real database gets a file beside the backup. Any other database
+    gets one beside itself, so tests never touch the real config folder.
+    """
+    if Path(db).resolve() == default_db().resolve():
+        return backup_path().with_name("cursor-openai-prior.json")
+    return Path(str(db) + ".kiln-prior.json")
+
+
+def save_prior(db, values):
+    path = prior_path(db)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values))
+    os.chmod(path, 0o600)
+
+
+def load_prior(db):
+    """The values up recorded, or {} when there is no usable record."""
+    try:
+        values = json.loads(prior_path(db).read_text())
+    except (OSError, ValueError):
+        return {}
+    return values if isinstance(values, dict) else {}
+
+
+def forget_prior(db):
+    try:
+        prior_path(db).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def cmd_status(db):
     con = connect(db)
     try:
@@ -200,7 +232,9 @@ def mutate(db, fn):
         data = json.loads(raw)
         maybe_backup(db, raw)
         result = fn(data)
-        save(con, data)
+        # A no-op is not written back, so Cursor's own JSON stays as it was.
+        if data != json.loads(raw):
+            save(con, data)
         con.execute("COMMIT")
         return result
     except Exception:
@@ -211,6 +245,42 @@ def mutate(db, fn):
         raise
     finally:
         con.close()
+
+
+def cmd_up(db, url, model):
+    def change(data):
+        # Only the first up records the user's settings. A later up sees
+        # kiln's tunnel URL, and recording that would lose the originals.
+        was_kiln = points_at_kiln(data)
+        mine = {
+            "useOpenAIKey": data.get("useOpenAIKey", False),
+            "openAIBaseUrl": data.get("openAIBaseUrl", ""),
+        }
+        base = apply_up(data, url, model)
+        if not was_kiln:
+            # Written before the commit, so a failed write leaves Cursor alone.
+            save_prior(db, mine)
+        return base
+
+    return mutate(db, change)
+
+
+def cmd_down(db):
+    prior = load_prior(db)
+
+    def change(data):
+        if not points_at_kiln(data):
+            return False
+        data["useOpenAIKey"] = prior.get("useOpenAIKey", False)
+        data["openAIBaseUrl"] = prior.get("openAIBaseUrl", "")
+        return True
+
+    if mutate(db, change):
+        forget_prior(db)
+    else:
+        print("kiln: Cursor is not pointed at a kiln tunnel, "
+              "so its settings were left alone.")
+    return cmd_status(db)
 
 
 def main(argv=None):
@@ -231,12 +301,11 @@ def main(argv=None):
     if args.cmd == "status":
         return cmd_status(args.db)
     if args.cmd == "up":
-        base = mutate(args.db, lambda data: apply_up(data, args.url, args.model))
+        base = cmd_up(args.db, args.url, args.model)
         print("useOpenAIKey true")
         print("baseHost %s" % host_of(base))
         return 0
-    mutate(args.db, apply_down)
-    return cmd_status(args.db)
+    return cmd_down(args.db)
 
 
 if __name__ == "__main__":

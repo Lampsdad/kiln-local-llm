@@ -565,12 +565,21 @@ def detect_gpu():
     # Apple Silicon: unified memory. Metal will not hand the whole
     # machine to one process -- recommendedMaxWorkingSetSize is
     # ~75% of RAM on Apple Silicon -- so budget that, not total RAM.
+    # Intel Macs are not unified: llama.cpp's macOS x64 build has no
+    # Metal, so the model runs on the CPU out of RAM. Half of RAM is
+    # budgeted for it, leaving the rest to macOS. Apple Silicon is told
+    # apart with hw.optional.arm64, not platform.machine(), which says
+    # x86_64 for Python running under Rosetta on Apple Silicon.
     if sys.platform == "darwin":
         out = _run(["sysctl", "-n", "hw.memsize"])
         if out and out.strip().isdigit():
             total = mib(int(out.strip()))
-            name = "Apple Silicon (unified memory)"
             brand = _run(["sysctl", "-n", "machdep.cpu.brand_string"])
+            arm = _run(["sysctl", "-n", "hw.optional.arm64"])
+            if not arm or arm.strip() != "1":
+                name = (brand or "").strip() or "Intel Mac"
+                return int(total * 0.5), name + " (CPU only, no Metal)", "cpu"
+            name = "Apple Silicon (unified memory)"
             if brand:
                 name = brand.strip() + " (unified memory)"
             return int(total * 0.75), name, "apple"
@@ -725,6 +734,19 @@ def _score(fam, quant_idx, mtp_id, mmproj_id, ctx):
     )
 
 
+def _flagged(plan, fam):
+    """Say on the plan what it misses. below_min: its window is under the
+    bar. below_quality: its quant is past the family's quality floor. A
+    plan can clear the bar and still be below quality, so these are two
+    flags, not one."""
+    names = [q for q, _ in fam["quants"]]
+    if plan["ctx"] < MIN_CTX:
+        plan["below_min"] = True
+    if names.index(plan["quant"]) > fam.get("min_quality", len(names) - 1):
+        plan["below_quality"] = True
+    return plan
+
+
 def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
     """Best configuration of one family on this card, or None.
 
@@ -765,13 +787,24 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
                 best, best_key = plan, key
 
     if best:
-        return best
+        return _flagged(best, fam)
     if quant and roomiest:
         # Pinned: report what that choice actually yields, even if it
         # is under the bar. Refusing to answer would be less useful.
-        roomiest["below_min"] = True
-        return roomiest
+        return _flagged(roomiest, fam)
     return None
+
+
+def _roomiest(vram_mib, family_ids):
+    """The configuration with the largest window across the quants of
+    these families, under the bar or not, or None if nothing loads."""
+    roomiest = None
+    for fam_id in family_ids:
+        for quant, _ in MODELS[fam_id]["quants"]:
+            plan = plan_for(vram_mib, fam_id, quant=quant)
+            if plan and (roomiest is None or plan["ctx"] > roomiest["ctx"]):
+                roomiest = plan
+    return roomiest
 
 
 def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
@@ -779,7 +812,14 @@ def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
     """What this machine should download and run. `order` is the
     families to choose from, best first; FAMILY_ORDER unless given."""
     if family:
+        # The same two fallbacks as below, within this family only.
         plan = plan_for(vram_mib, family, quant)
+        if not plan:
+            plan = plan_for(vram_mib, family, quant, quality_floor=False)
+        # A pinned quant that loads nowhere stays unloadable: another quant
+        # would not be the one that was asked for.
+        if not plan and not quant:
+            plan = _roomiest(vram_mib, [family])
         if plan:
             plan["forced"] = True
         return plan
@@ -801,18 +841,9 @@ def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
     for fam_id in families:
         plan = plan_for(vram_mib, fam_id, quality_floor=False)
         if plan:
-            plan["below_quality"] = True
             return plan
 
-    roomiest = None
-    for fam_id in families:
-        for quant, _ in MODELS[fam_id]["quants"]:
-            plan = plan_for(vram_mib, fam_id, quant=quant)
-            if plan and (roomiest is None or plan["ctx"] > roomiest["ctx"]):
-                roomiest = plan
-    if roomiest:
-        roomiest["below_min"] = True
-    return roomiest
+    return _roomiest(vram_mib, families)
 
 
 # ---------------------------------------------------------------
@@ -897,6 +928,7 @@ def cmd_recommend(args):
         ("REC_THIRD_PARTY", 1 if fam.get("third_party") else 0),
         ("REC_TOTAL_GB", "%.1f" % (total / 1e9)),
         ("REC_BELOW_MIN", 1 if plan.get("below_min") else 0),
+        ("REC_BELOW_QUALITY", 1 if plan.get("below_quality") else 0),
         ("REC_MIN_CTX", MIN_CTX),
     ]
     emit(rows)
@@ -1084,7 +1116,7 @@ def cmd_quants(args):
     # still mark the best quant WITHIN this family, so the menu always
     # has a sensible default.
     if rec_quant is None and vram:
-        own = plan_for(vram, fam_id)
+        own = recommend(vram, family=fam_id)
         rec_quant = own["quant"] if own else None
 
     for quant, qbytes in fam["quants"]:

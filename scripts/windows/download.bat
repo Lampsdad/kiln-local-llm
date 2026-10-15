@@ -157,10 +157,17 @@ if "%N%"=="0" (
 echo.
 echo      * = recommended for this machine
 echo.
+:: Nothing is marked when no quant fits this card comfortably. Fall
+:: back to the last row, which is the smallest. Row 1 is the biggest
+:: download on offer, the wrong default for a small card.
+if not defined DEFN (
+    set "DEFN=%N%"
+    echo  No quant is a comfortable fit for this GPU, so the default is the smallest.
+    echo.
+)
 set "CHOICE="
 set /p CHOICE="Enter choice [1-%N%] (default=%DEFN%): "
 if not defined CHOICE set "CHOICE=%DEFN%"
-if not defined CHOICE set "CHOICE=1"
 
 :: Validate before indexing: an out-of-range pick would silently
 :: leave QUANT empty and download a file named "-.gguf".
@@ -185,6 +192,7 @@ set "REC_MMPROJ_LOCAL="
 set "REC_CTX=0"
 set "REC_TOTAL_GB=%SIZE%"
 set "REC_BELOW_MIN=0"
+set "REC_BELOW_QUALITY=0"
 for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%HW%" --recommend --family "%V_ID%" --quant "%QUANT%" 2^>nul`) do set "%%A=%%B"
 
 set "FILE=%V_PREFIX%-%QUANT%.gguf"
@@ -205,17 +213,20 @@ if "%REC_BELOW_MIN%"=="1" (
     echo         wants. A smaller quant, or one of the distill builds,
     echo         would give you a much larger window.
 )
+if "%REC_BELOW_QUALITY%"=="1" (
+    echo.
+    echo  NOTE: a low-bit quant, below the quality floor; expect weaker output.
+)
 echo.
 
 :: ---- free space check ----
-for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command ^
-    "[math]::Round((Get-PSDrive C).Free/1GB,1)"`) do set FREE=%%F
-echo  Free space on C: : %FREE% GB
-for /f "usebackq delims=" %%N in (`powershell -NoProfile -Command ^
-    "[math]::Round(%REC_TOTAL_GB% + 5, 1)"`) do set NEEDED=%%N
-echo  Recommended free  : %NEEDED% GB  (includes 5 GB working margin)
+:: Python, not PowerShell. PowerShell prints 36,5 in a comma-decimal
+:: culture and then reads it back as an array, and its drive lookup
+:: looks at C: even when the checkout is on another drive. The drive
+:: shown and checked is the one this script runs from. GB here are
+:: 10^9 bytes, the unit of the sizes above.
+%PY_EXE% -c "import os,shutil,sys; free=shutil.disk_usage('.').free/1e9; need=float(sys.argv[1])+5; print('  Free space on {} : {:.1f} GB'.format(os.path.splitdrive(os.path.abspath('.'))[0], free)); print('  Recommended free  : {:.1f} GB  (includes 5 GB working margin)'.format(need)); sys.exit(1 if free < need else 0)" "%REC_TOTAL_GB%"
 echo.
-powershell -NoProfile -Command "if ((Get-PSDrive C).Free/1GB -lt %NEEDED%) { exit 1 } else { exit 0 }"
 if errorlevel 1 (
     echo  WARNING: not enough free space. Run: kiln clean
     echo.

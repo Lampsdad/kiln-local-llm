@@ -46,7 +46,7 @@ HW="$SCRIPT_DIR/../hardware.py"
 # are ours and fixed, so a small case filter beats eval.
 REC_QUANT=""; REC_CTX=0; REC_MTP_FILE=""; REC_MTP_REPO=""; REC_MTP_LOCAL=""
 REC_MMPROJ_FILE=""; REC_MMPROJ_REPO=""; REC_MMPROJ_LOCAL=""; REC_TOTAL_GB=""
-REC_BELOW_MIN=0; VRAM_MIB=0; TIER_LABEL=""; GPU_NAME=""; PROBED=0
+REC_BELOW_MIN=0; REC_BELOW_QUALITY=0; VRAM_MIB=0; TIER_LABEL=""; GPU_NAME=""; PROBED=0
 
 read_plan() {
     while IFS='=' read -r k v; do
@@ -65,6 +65,7 @@ read_plan() {
             REC_MMPROJ_LOCAL) REC_MMPROJ_LOCAL="$v" ;;
             REC_TOTAL_GB)    REC_TOTAL_GB="$v" ;;
             REC_BELOW_MIN)   REC_BELOW_MIN="$v" ;;
+            REC_BELOW_QUALITY) REC_BELOW_QUALITY="$v" ;;
         esac
     done < <("$@" 2>/dev/null | kiln_strip_cr || true)
 }
@@ -115,6 +116,10 @@ if [ "$REC_BELOW_MIN" = "1" ]; then
     echo " [WARN] this leaves less context than agentic coding really"
     echo "        wants. A smaller quant, or a smaller model, would"
     echo "        give you a much larger window."
+fi
+if [ "$REC_BELOW_QUALITY" = "1" ]; then
+    echo
+    echo " NOTE: a low-bit quant, below the quality floor; expect weaker output."
 fi
 echo "============================================================"
 echo

@@ -48,8 +48,13 @@ def serve(handler):
 
 
 class FakeLlama(BaseHTTPRequestHandler):
+    """llama-server started with --api-key-file: /health and /v1/models
+    answer without a key, and /props wants one. When a test sets seen to a
+    list, every request's (path, Authorization) is appended to it."""
     alias = "qwen3.8-27b"
     n_ctx = 212992
+    guarded = ("/props",)
+    seen = None
 
     def log_message(self, *a):
         pass
@@ -63,10 +68,15 @@ class FakeLlama(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.headers.get("Authorization") != "Bearer " + KEY:
+        auth = self.headers.get("Authorization")
+        if self.seen is not None:
+            self.seen.append((self.path, auth))
+        if self.path in self.guarded and auth != "Bearer " + KEY:
             return self._send(401, {"error": {
                 "code": 401, "message": "Invalid API Key",
                 "type": "authentication_error"}})
+        if self.path == "/health":
+            return self._send(200, {"status": "ok"})
         if self.path == "/v1/models":
             return self._send(200, {"object": "list", "data": [
                 {"id": self.alias, "object": "model", "owned_by": "llamacpp"}]})
@@ -75,6 +85,30 @@ class FakeLlama(BaseHTTPRequestHandler):
                 "default_generation_settings": {"n_ctx": self.n_ctx},
                 "modalities": {"vision": True}})
         self._send(404, {})
+
+
+class OldLlama(FakeLlama):
+    """An older build, which guards its health check and model list too."""
+    guarded = ("/health", "/v1/models", "/props")
+
+
+class Recorder(BaseHTTPRequestHandler):
+    """Whatever else holds the port: answers every GET with reply, and
+    keeps each request's Authorization header in seen."""
+    reply = (200, "application/json", b"{}")
+    seen = None
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        self.seen.append(self.headers.get("Authorization"))
+        code, ctype, body = self.reply
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class OtherService(BaseHTTPRequestHandler):
@@ -296,6 +330,42 @@ class ProbeTest(Base):
     def test_wrong_key_is_still_recognised(self):
         with serve(FakeLlama) as url:
             self.assertEqual(opencode.probe(url, "wrong"), {"auth": False})
+
+    def test_key_is_not_sent_to_a_stranger(self):
+        strangers = [(200, "application/json", b'{"hello": 1}'),
+                     (404, "text/html", b"<html>not found</html>"),
+                     (401, "text/plain", b"missing authorization header\n")]
+        for reply in strangers:
+            with self.subTest(status=reply[0]):
+                handler = type("Stranger", (Recorder,),
+                               {"reply": reply, "seen": []})
+                with serve(handler) as url:
+                    self.assertIsNone(opencode.probe(url, KEY))
+                self.assertTrue(handler.seen)
+                self.assertFalse(any(handler.seen), "the key went out")
+
+    def test_key_follows_the_identification(self):
+        handler = type("Llama", (FakeLlama,), {"seen": []})
+        with serve(handler) as url:
+            opencode.probe(url, KEY)
+        # The model list is public, so it goes bare; only /props gets the key.
+        self.assertEqual([(p, a is not None) for p, a in handler.seen],
+                         [("/v1/models", False), ("/props", True)])
+
+    def test_older_build_is_asked_for_the_key_on_its_model_list(self):
+        handler = type("Old", (OldLlama,), {"seen": []})
+        with serve(handler) as url:
+            info = opencode.probe(url, KEY)
+        self.assertEqual(info, {"auth": True, "alias": "qwen3.8-27b",
+                                "ctx": 212992, "vision": True})
+        self.assertEqual([(p, a is not None) for p, a in handler.seen],
+                         [("/v1/models", False), ("/v1/models", True),
+                          ("/props", True)])
+
+    def test_older_build_with_a_wrong_key(self):
+        with serve(OldLlama) as url:
+            self.assertEqual(opencode.probe(url, "wrong"), {"auth": False})
+            self.assertEqual(opencode.probe(url, ""), {"auth": False})
 
     def test_other_service_on_the_port(self):
         with serve(OtherService) as url:

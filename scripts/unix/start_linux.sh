@@ -27,7 +27,7 @@ ALIAS="$V_ALIAS"
 
 # ── pre-flight checks ────────────────────────────────────────
 if [ ! -f "$BINARY" ]; then
-    echo "ERROR: $BINARY not found. Run ./install_linux.sh first."
+    echo "ERROR: $BINARY not found. Run: ./kiln.sh setup"
     exit 1
 fi
 if [ ! -f "$MODEL" ]; then
@@ -39,16 +39,19 @@ fi
 . "$SCRIPT_DIR/lib_api_key.sh"
 # kiln's own tunnel, found by the port it forwards to.
 . "$SCRIPT_DIR/lib_tunnel.sh"
+# kiln's own server, found the same way, and the shutdown handler.
+. "$SCRIPT_DIR/lib_server.sh"
 
 # ── per-family flags: sampling, MTP head, vision (lib_select.sh) ─
 kiln_model_args "$BINARY"
 
 # ── stop any running instances ───────────────────────────────
 echo "Stopping any existing llama-server (cloudflared left running for stable URL)..."
-pkill -x llama-server 2>/dev/null || true
-sleep 1
+kiln_stop_server "$PORT" || true
 
 # ── start llama-server ───────────────────────────────────────
+# No tunnel yet. The trap below reads CF_PID when Ctrl+C arrives.
+CF_PID=""
 echo "Starting llama-server..."
 # FIT_ARGS is either an explicit --ctx-size computed by
 # scripts/hardware.py for the GPU present, or --fit on when there
@@ -74,6 +77,10 @@ echo "Starting llama-server..."
     "${EXTRA[@]}" \
     --log-file     "$LOG" &
 SERVER_PID=$!
+# Installed now, not with the tunnel: the health poll below takes
+# minutes, and a background job started by a script ignores SIGINT, so
+# without this Ctrl+C would leave the server holding the GPU.
+trap 'kiln_shutdown "$SERVER_PID" "$CF_PID"' INT TERM
 
 # ── wait for server to be ready (health poll) ────────────────
 echo "Waiting for server to load (1-2 min for a 30 GB model)..."
@@ -123,8 +130,15 @@ else
 # literal string. (lib_tunnel.sh accepts either.)
 cloudflared tunnel --url "http://127.0.0.1:$PORT" >"$CF_LOG" 2>&1 &
 CF_PID=$!
-sleep 12
-grep -o 'https://[^ ]*trycloudflare\.com' "$CF_LOG" | head -1 | tee cloudflared.url.tmp | xargs -I{} echo "{}/v1" | tee ./cloudflared.url
+TUNNEL_URL="$(kiln_wait_tunnel_url "$CF_LOG" "$CF_PID")"
+if [ -n "$TUNNEL_URL" ]; then
+    echo "$TUNNEL_URL/v1" | tee ./cloudflared.url
+else
+    # A URL left from an earlier tunnel is for a process that is gone.
+    rm -f ./cloudflared.url
+    echo "WARNING: the tunnel URL has not appeared. Check $CF_LOG."
+    echo "The API is reachable at http://localhost:$PORT/v1"
+fi
 fi
 
 echo
@@ -140,5 +154,4 @@ echo
 echo "Press Ctrl+C to stop everything."
 
 # ── keep running until interrupted ───────────────────────────
-trap 'echo; echo Shutting down...; kill $SERVER_PID 2>/dev/null; [ -n "${CF_PID:-}" ] && kill $CF_PID 2>/dev/null; exit 0' INT TERM
 wait $SERVER_PID

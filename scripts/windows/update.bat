@@ -86,8 +86,9 @@ set URL=https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%ZIP%
 
 :: ---- download ----
 echo  Downloading %ZIP% ...
+set "KILN_PS_FILE=%TEMP%\%ZIP%"
 powershell -NoProfile -Command ^
-    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%URL%' -OutFile '%TEMP%\%ZIP%' } catch { Write-Host $_.Exception.Message; exit 1 }"
+    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%URL%' -OutFile $env:KILN_PS_FILE } catch { Write-Host $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
     echo  ERROR: download failed. Asset may not exist for this release:
     echo    %URL%
@@ -104,8 +105,9 @@ if exist "llama-bin\llama-server.exe" (
 :: ---- extract ----
 echo  Extracting to llama-bin\ ...
 if not exist "llama-bin" mkdir "llama-bin"
+set "KILN_PS_FILE=%TEMP%\%ZIP%"
 powershell -NoProfile -Command ^
-    "Expand-Archive -LiteralPath '%TEMP%\%ZIP%' -DestinationPath 'llama-bin' -Force"
+    "Expand-Archive -LiteralPath $env:KILN_PS_FILE -DestinationPath 'llama-bin' -Force"
 if errorlevel 1 (
     echo  ERROR: extraction failed. Restoring backup...
     if exist "%BACKUP%" (
@@ -125,8 +127,9 @@ if exist "llama-bin\build\bin\llama-server.exe" (
 :: version; only if that fails, carry the old DLLs over from the
 :: backup, which works when the major version did not change.
 echo  Downloading %CUDART% ...
+set "KILN_PS_FILE=%TEMP%\%CUDART%"
 powershell -NoProfile -Command ^
-    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%CUDART%' -OutFile '%TEMP%\%CUDART%'; Expand-Archive -LiteralPath '%TEMP%\%CUDART%' -DestinationPath 'llama-bin' -Force } catch { Write-Host $_.Exception.Message; exit 1 }"
+    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%CUDART%' -OutFile $env:KILN_PS_FILE; Expand-Archive -LiteralPath $env:KILN_PS_FILE -DestinationPath 'llama-bin' -Force } catch { Write-Host $_.Exception.Message; exit 1 }"
 del "%TEMP%\%CUDART%" >nul 2>&1
 if not exist "llama-bin\cudart64_13.dll" if not exist "llama-bin\cudart64_12.dll" (
     if exist "%BACKUP%\cudart64_13.dll" (

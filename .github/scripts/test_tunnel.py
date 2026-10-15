@@ -15,6 +15,8 @@ so only its wiring is checked here.
 """
 import os
 import random
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -34,26 +36,35 @@ class OnlyOurs(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.port = random.randint(50000, 59000)
+        # A copy of bash named cloudflared, not a script: macOS's ps names
+        # a script's interpreter, so a script would never be recognised.
         self.fake = os.path.join(tmp.name, "cloudflared")
-        with open(self.fake, "w") as fh:
-            fh.write("#!/bin/sh\nwhile :; do sleep 1; done\n")
-        os.chmod(self.fake, 0o755)
+        shutil.copy(shutil.which("bash"), self.fake)
+        self.body = os.path.join(tmp.name, "body.sh")
+        with open(self.body, "w") as fh:
+            fh.write("while :; do sleep 1; done\n")
         self.procs = {}
         self.addCleanup(self.kill_all)
 
     def kill_all(self):
+        # Each child leads its own session, so the `sleep` a fake starts
+        # goes with it rather than outliving the test.
         for p in self.procs.values():
             if p.poll() is None:
-                p.kill()
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
                 p.wait()
 
     def spawn(self, name, *argv):
         self.procs[name] = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL,
                                             stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL)
+                                            stderr=subprocess.DEVNULL,
+                                            start_new_session=True)
 
     def tunnel(self, name, *args):
-        self.spawn(name, self.fake, "tunnel", *args)
+        self.spawn(name, self.fake, self.body, "tunnel", *args)
 
     def start_everything(self):
         p = self.port
@@ -123,6 +134,14 @@ class NothingKillsByName(unittest.TestCase):
             with self.subTest(f):
                 self.assertNotIn("pkill -x cloudflared", text)
                 self.assertNotIn("/im cloudflared.exe", text)
+                # The llama-server rule, and its tests, are in
+                # test_server.py and test_windows_server.py. These are the
+                # name-based forms it bans.
+                self.assertNotIn("pkill -x llama-server", text)
+                self.assertNotIn("pgrep -x llama-server", text)
+                self.assertNotIn('"-x", "llama-server"', text)
+                self.assertNotIn("/im llama-server.exe", text)
+                self.assertNotIn("imagename eq llama-server.exe", text)
 
     def test_windows_stop_and_start_use_kiln_tunnel_ps1(self):
         for f in ("kiln.bat", "start.bat"):

@@ -19,6 +19,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -33,8 +34,8 @@ CARD_12 = 12288
 GEMMA = [f for f in M if M[f]["group"] == "gemma"]
 
 
-def keys(argv):
-    """Run hardware.py's main with argv; KEY=VALUE output as a dict."""
+def output(argv):
+    """hardware.py's stdout for argv, from its main()."""
     out = io.StringIO()
     saved = sys.argv
     sys.argv = ["hardware.py"] + argv
@@ -43,7 +44,12 @@ def keys(argv):
             hardware.main()
     finally:
         sys.argv = saved
-    return dict(line.split("=", 1) for line in out.getvalue().splitlines()
+    return out.getvalue()
+
+
+def keys(argv):
+    """Run hardware.py's main with argv; KEY=VALUE output as a dict."""
+    return dict(line.split("=", 1) for line in output(argv).splitlines()
                 if "=" in line)
 
 
@@ -194,6 +200,121 @@ class Sizing(unittest.TestCase):
 
     def test_e4b_stops_at_its_window(self):
         self.assertEqual(self.plan(CARD_32, "gemma-e4b")["ctx"], 131072)
+
+    def test_pinned_family_on_a_small_card_gets_a_plan(self):
+        # 16 GB cannot hold the 31.5 GB or 20.9 GB Qwen quants, but smaller
+        # ones load. Pinning the family must give the best of those, flagged,
+        # rather than a refusal.
+        p = self.plan(CARD_16, "base")
+        self.assertIsNotNone(p)
+        self.assertTrue(p["forced"])
+        self.assertGreater(p["ctx"], 0)
+        self.assertTrue(p.get("below_min") or p.get("below_quality"))
+        self.assertLess(p["quant_bytes"], self.plan(CARD_32, "base")["quant_bytes"])
+
+    def test_pinned_family_at_32_gb_is_unchanged(self):
+        p = self.plan(CARD_32, "base")
+        self.assertEqual((p["quant"], p["mtp"], p["mmproj"], p["ctx"]),
+                         ("UD-Q5_K_XL", "q8_0", "f16", 114688))
+        self.assertTrue(p["forced"])
+        self.assertNotIn("below_min", p)
+        self.assertNotIn("below_quality", p)
+
+    def test_pinned_family_that_nothing_loads_in_is_none(self):
+        self.assertIsNone(self.plan(2000, "base"))
+        r = keys(["--recommend", "--vram", "2000", "--family", "base"])
+        self.assertEqual((r["REC_OK"], r["REC_REASON"]), ("0", "does-not-fit"))
+
+    def test_pinned_quant_is_not_swapped_for_another(self):
+        # Nothing loads at the pinned quant, so the answer is nothing: a
+        # different quant that happens to load is not what was asked for.
+        self.assertIsNone(hardware.recommend(CARD_16, family="base",
+                                             quant="UD-Q5_K_XL"))
+
+    def test_pinned_family_below_quality_is_reported(self):
+        r = keys(["--recommend", "--vram", str(CARD_16), "--family", "base"])
+        self.assertEqual((r["REC_OK"], r["REC_FAMILY"]), ("1", "base"))
+        self.assertEqual(r["REC_BELOW_QUALITY"], "1")
+
+    def test_a_pinned_quant_is_flagged_by_what_it_misses(self):
+        # UD-IQ2_S is past the quality floor, but its window clears the bar
+        # on a 32 GB card: below quality, not below the bar.
+        p = hardware.recommend(CARD_32, family="base", quant="UD-IQ2_S")
+        self.assertIn("below_quality", p)
+        self.assertNotIn("below_min", p)
+        # UD-IQ3_S gets too little window on a 16 GB card.
+        p = hardware.recommend(CARD_16, family="base", quant="UD-IQ3_S")
+        self.assertIn("below_min", p)
+        self.assertLess(p["ctx"], hardware.MIN_CTX)
+
+    def test_flags_say_what_a_plan_misses(self):
+        # below_min exactly when the window is under the bar, and
+        # below_quality exactly when the quant is past the family's floor.
+        for vram in range(2048, 98304, 4096):
+            plans = [hardware.recommend(vram)]
+            for fid, fam in M.items():
+                plans.append(hardware.recommend(vram, family=fid))
+                for quant in [None] + [q for q, _ in fam["quants"]]:
+                    for relaxed in (True, False):
+                        plans.append(hardware.plan_for(vram, fid, quant, relaxed))
+            for p in plans:
+                if p is None:
+                    continue
+                names = [q for q, _ in M[p["family"]]["quants"]]
+                floor = M[p["family"]].get("min_quality", len(names) - 1)
+                where = (vram, p["family"], p["quant"])
+                self.assertEqual("below_min" in p, p["ctx"] < hardware.MIN_CTX, where)
+                self.assertEqual("below_quality" in p,
+                                 names.index(p["quant"]) > floor, where)
+
+
+class Quants(unittest.TestCase):
+    def test_the_menu_default_is_the_quant_recommend_picks(self):
+        # download.bat's menu marks one row as the default. Pinned to a family
+        # on a small card, that must be the quant --recommend --family picks,
+        # not no row at all.
+        for vram in (CARD_16, CARD_32):
+            rows = [line.split("|") for line in
+                    output(["--quants", "base", "--vram", str(vram)]).splitlines()]
+            marked = [r[0] for r in rows if r[6] == "1"]
+            self.assertEqual(marked,
+                             [hardware.recommend(vram, family="base")["quant"]],
+                             vram)
+
+
+class Mac(unittest.TestCase):
+    RAM_16 = str(16 * 2 ** 30)
+
+    def gpu(self, sysctl):
+        """detect_gpu() on a Mac whose sysctl answers are `sysctl`, a dict of
+        key to output. A key not in it makes its command fail, as it does on
+        an Intel Mac that lacks it."""
+        def run(cmd):
+            if cmd[0] == "sysctl":
+                return sysctl.get(cmd[-1])
+            return None   # no NVIDIA or ROCm tools on a Mac
+        with mock.patch.object(hardware.sys, "platform", "darwin"), \
+                mock.patch.object(hardware, "_run", run):
+            return hardware.detect_gpu()
+
+    def test_apple_silicon_keeps_the_unified_budget(self):
+        self.assertEqual(self.gpu({"hw.memsize": self.RAM_16,
+                                   "hw.optional.arm64": "1\n",
+                                   "machdep.cpu.brand_string": "Apple M2\n"}),
+                         (12288, "Apple M2 (unified memory)", "apple"))
+
+    def test_intel_mac_is_budgeted_as_cpu(self):
+        brand = "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz\n"
+        for arm in (None, "", "0\n"):
+            answers = {"hw.memsize": self.RAM_16, "machdep.cpu.brand_string": brand}
+            if arm is not None:
+                answers["hw.optional.arm64"] = arm
+            self.assertEqual(
+                self.gpu(answers),
+                (8192, "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (CPU only, no Metal)",
+                 "cpu"), repr(arm))
+        self.assertEqual(self.gpu({"hw.memsize": self.RAM_16}),
+                         (8192, "Intel Mac (CPU only, no Metal)", "cpu"))
 
 
 class Build(unittest.TestCase):

@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 import io
 import os
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -35,6 +37,24 @@ try:
     HAVE_TEXTUAL = True
 except ImportError:
     HAVE_TEXTUAL = False
+
+# CI sets this wherever it installs Textual. Then a Textual that will not
+# import fails the run, rather than quietly skipping the app tests.
+REQUIRE_TEXTUAL = os.environ.get("KILN_REQUIRE_TEXTUAL") == "1"
+
+
+class Textual(unittest.TestCase):
+    @unittest.skipUnless(REQUIRE_TEXTUAL, "KILN_REQUIRE_TEXTUAL is not 1")
+    def test_textual_imports_when_it_is_required(self):
+        try:
+            import textual  # noqa: F401,F811
+        except ImportError as err:
+            self.fail("KILN_REQUIRE_TEXTUAL=1, but Textual will not import: %s" % err)
+
+
+class Terminal(io.StringIO):
+    def isatty(self):
+        return True
 
 
 class Bootstrap(unittest.TestCase):
@@ -66,17 +86,86 @@ class Bootstrap(unittest.TestCase):
             open(tui.venv_python(), "w").close()
             return 1
 
-        class Terminal(io.StringIO):
-            def isatty(self):
-                return True
-
+        # ROOT moves with VENV: install() prints one relative to the
+        # other, which fails across drives (the checkout is on D: on
+        # GitHub's Windows runners, the temp folder on C:).
         with mock.patch.object(tui, "VENV", os.path.join(tmp.name, "v")), \
+                mock.patch.object(tui, "ROOT", tmp.name), \
                 mock.patch.object(tui.subprocess, "call", call), \
                 mock.patch.object(sys, "stdin", Terminal()), \
                 mock.patch("builtins.input", return_value=""), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(tui.install())
             self.assertFalse(os.path.exists(tui.VENV))
+
+    def venv_on_disk(self, marker):
+        """A venv folder with a placeholder interpreter and a marker file,
+        so a test can tell whether it was removed. Returns its path."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        venv = os.path.join(tmp.name, "v")
+        with mock.patch.object(tui, "VENV", venv):
+            os.makedirs(os.path.dirname(tui.venv_python()))
+            open(tui.venv_python(), "w").close()
+        open(os.path.join(venv, marker), "w").close()
+        return venv
+
+    def test_a_venv_whose_python_no_longer_runs_is_made_again(self):
+        # Its base Python was upgraded or removed, so the venv's pip can
+        # never run. Reused, that fails on every run; made again, it works.
+        venv = self.venv_on_disk("old")
+        calls = []
+        new_python = os.path.join(venv, "new")
+
+        def call(argv, **kw):
+            calls.append(list(argv))
+            if "--version" in argv:
+                return 1
+            if "venv" in argv:
+                os.makedirs(os.path.dirname(tui.venv_python()))
+                open(tui.venv_python(), "w").close()
+                open(new_python, "w").close()
+            return 0
+
+        out = io.StringIO()
+        with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui, "ROOT", os.path.dirname(venv)), \
+                mock.patch.object(tui.subprocess, "call", call), \
+                mock.patch.object(sys, "stdin", Terminal()), \
+                mock.patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(out):
+            self.assertTrue(tui.install())
+        self.assertFalse(os.path.exists(os.path.join(venv, "old")))
+        self.assertTrue(os.path.exists(new_python))
+        # Checked, then made again, then pip installs into the new one.
+        self.assertEqual([c[2] for c in calls], ["pip", "venv", "pip"])
+        self.assertIn("is broken, so it is being rebuilt", out.getvalue())
+
+    def test_a_venv_that_works_is_kept(self):
+        venv = self.venv_on_disk("kept")
+        calls = []
+
+        def call(argv, **kw):
+            calls.append(list(argv))
+            return 0
+
+        with mock.patch.object(tui, "VENV", venv), \
+                mock.patch.object(tui, "ROOT", os.path.dirname(venv)), \
+                mock.patch.object(tui.subprocess, "call", call), \
+                mock.patch.object(sys, "stdin", Terminal()), \
+                mock.patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(tui.install())
+        self.assertTrue(os.path.exists(os.path.join(venv, "kept")))
+        # Probed, then pip installs into it; nothing is created again.
+        self.assertIn("--version", calls[0])
+        self.assertEqual([c[2] for c in calls], ["pip", "pip"])
+
+    def test_a_python_that_cannot_start_is_not_ready(self):
+        # A file that is not a program, as a half-written venv can leave.
+        venv = self.venv_on_disk("x")
+        with mock.patch.object(tui, "VENV", venv):
+            self.assertFalse(tui.venv_ready())
 
     def test_requirement_matches_the_major_it_checks(self):
         self.assertIn(">=%d." % tui.MAJOR, tui.REQUIREMENT)
@@ -160,6 +249,52 @@ class FakeControl:
         return job
 
 
+class CountingControl(FakeControl):
+    def __init__(self):
+        FakeControl.__init__(self)
+        self.shutdowns = 0
+
+    def shutdown(self):
+        self.shutdowns += 1
+        return []
+
+
+# Run in a child process: starts the app headless with one fake download
+# running, and says "ready" once the app has started watching for signals.
+# Textual swallows print() while an app runs, so the harness writes to the
+# descriptor itself.
+HANGUP_HARNESS = """
+import os
+import sys
+sys.path[:0] = %r
+import control, test_tui, tui_app
+
+def say(text):
+    os.write(1, (text + "\\n").encode())
+
+class Job:
+    action = "get"
+    title = "Download"
+    running = True
+    log_path = ""
+
+    def cancel(self):
+        say("cancelled")
+
+class Ctl(test_tui.FakeControl):
+    shutdown = control.Control.shutdown
+
+    def status(self):
+        say("ready")
+        return test_tui.FakeControl.status(self)
+
+ctl = Ctl()
+ctl.jobs["1"] = Job()
+tui_app.KilnApp(ctl).run(headless=True)
+say("exited")
+"""
+
+
 @unittest.skipUnless(HAVE_TEXTUAL, "Textual is not installed")
 class App(unittest.TestCase):
     def setUp(self):
@@ -194,6 +329,15 @@ class App(unittest.TestCase):
             self.assertEqual(app.row_ids, ["base", "ablit", "9b"])
             self.assertIn("v9.9.9", app.sub_title)
         self.drive(check)
+
+    def test_a_status_that_arrives_while_quitting_is_dropped(self):
+        # The status worker can finish after quitting has begun taking the
+        # widgets down; what it read then must not crash the app.
+        async def go(app, pilot):
+            s = app.status
+            await app.query_one("#next").remove()
+            app.show_status(s)
+        self.drive(go)
 
     def test_start_carries_the_chosen_options(self):
         async def go(app, pilot):
@@ -372,6 +516,180 @@ class App(unittest.TestCase):
             self.assertTrue(app.is_running)
             self.assertFalse(screen.runner.stopped.is_set())
             screen.runner.cancel()
+        self.drive(go)
+
+    def test_quitting_stops_the_jobs_once(self):
+        async def go(app, pilot):
+            await pilot.press("q")
+            await pilot.pause(0.2)
+        ctl = CountingControl()
+        app, _ = self.drive(go, ctl)
+        self.assertFalse(app.is_running)
+        app.stop_jobs()
+        self.assertEqual(ctl.shutdowns, 1)
+
+    def test_the_interpreter_exiting_does_not_stop_the_jobs_twice(self):
+        # main() hands stop_jobs to atexit, so whatever ends the app,
+        # an uncaught error included, runs it once more at the end.
+        ctl = CountingControl()
+        with mock.patch.object(self.tui_app.control, "Control",
+                               return_value=ctl), \
+                mock.patch.object(self.tui_app.KilnApp, "run"), \
+                mock.patch.object(self.tui_app.atexit, "register") as reg:
+            self.assertEqual(self.tui_app.main([]), 0)
+        stop, = reg.call_args[0]
+        stop()
+        stop()
+        self.assertEqual(ctl.shutdowns, 1)
+
+    def test_only_the_events_that_close_the_window_stop_the_jobs(self):
+        stops = []
+
+        def stop():
+            stops.append(True)
+
+        self.assertFalse(self.tui_app.closing_event(0, stop))  # Ctrl+C
+        self.assertEqual(stops, [])
+        for event in (2, 5, 6):   # close, logoff, shutdown
+            self.assertTrue(self.tui_app.closing_event(event, stop))
+        self.assertEqual(len(stops), 3)
+
+    @unittest.skipUnless(os.name == "nt", "a Windows console handler")
+    def test_the_console_close_hook_is_registered_and_stops_the_jobs(self):
+        import ctypes
+        stops = []
+
+        def stop():
+            stops.append(True)
+
+        hook = self.tui_app.console_close_hook(stop)
+        self.addCleanup(ctypes.windll.kernel32.SetConsoleCtrlHandler,
+                        hook, False)
+        self.assertTrue(hook(2))       # called directly, no event sent
+        self.assertEqual(stops, [True])
+
+    @unittest.skipIf(os.name == "nt", "SIGHUP and SIGTERM are Unix signals")
+    def test_hangup_and_term_stop_the_jobs_and_the_app_exits(self):
+        # A closed terminal sends SIGHUP; kill sends SIGTERM. Either must
+        # cancel the download, which runs in its own session and would
+        # otherwise go on unseen, and then leave cleanly.
+        here = os.path.dirname(os.path.abspath(__file__))
+        harness = HANGUP_HARNESS % ([here, os.path.join(ROOT, "scripts")],)
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signal=sig.name):
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", harness], stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, universal_newlines=True)
+                # If the child never says ready, the watchdog stops it so
+                # the test fails instead of waiting forever.
+                watchdog = threading.Timer(60, proc.kill)
+                watchdog.start()
+                try:
+                    if proc.stdout.readline().strip() != "ready":
+                        proc.kill()
+                        self.fail("harness did not start: "
+                                  + proc.communicate()[1])
+                    os.kill(proc.pid, sig)
+                    out, err = proc.communicate(timeout=60)
+                finally:
+                    watchdog.cancel()
+                    proc.kill()
+                lines = [x for x in out.splitlines() if x != "ready"]
+                self.assertEqual(lines, ["cancelled", "exited"], err)
+                self.assertEqual(proc.returncode, 0, err)
+
+    def test_a_benchmark_that_crashes_leaves_the_app_running(self):
+        bench = self.bench
+
+        class CrashingRunner:
+            def __init__(self, ctl, chosen, depth, emit):
+                self.chosen, self.emit = chosen, emit
+                self.results = []
+
+            def cancel(self):
+                pass
+
+            def run(self):
+                s = self.chosen[0]
+                self.emit("result", {
+                    "id": s.id, "variant": s.variant, "label": s.label,
+                    "quant": s.quant, "mtp": s.mtp, "no_mtp": s.no_mtp,
+                    "ctx_expected": s.ctx, "ctx": s.ctx, "load_s": 30.0,
+                    "prefill_tps": 3000.0, "accept_pct": 70.0,
+                    "gen_tps": 85.0})
+                raise RuntimeError("disk on fire")
+
+        bench.Runner = CrashingRunner
+
+        async def go(app, pilot):
+            await pilot.press("b")
+            await pilot.pause(0.1)
+            screen = app.screen
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if screen.runner is None:
+                    break
+            # The error is a notification; the screen is usable again and
+            # keeps the setup that was measured before the crash.
+            self.assertTrue(app.is_running)
+            self.assertIsNone(screen.runner)
+            self.assertEqual(screen.results["base"]["gen_tps"], 85.0)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            self.assertNotIsInstance(app.screen, self.tui_app.BenchScreen)
+        self.drive(go)
+
+    def test_a_result_that_could_not_be_saved_is_said_so_and_kept(self):
+        bench = self.bench
+        message = ("could not save kiln-benchmark.json: "
+                   "[Errno 13] Permission denied")
+
+        class UnsavedRunner:
+            def __init__(self, ctl, chosen, depth, emit):
+                self.chosen, self.depth, self.emit = chosen, depth, emit
+
+            def cancel(self):
+                pass
+
+            def run(self):
+                results = [{"id": s.id, "variant": s.variant, "label": s.label,
+                            "quant": s.quant, "mtp": s.mtp,
+                            "no_mtp": s.no_mtp, "ctx_expected": s.ctx,
+                            "ctx": s.ctx, "load_s": 30.0,
+                            "prefill_tps": 3000.0, "accept_pct": 70.0,
+                            "gen_tps": 85.0} for s in self.chosen]
+                doc = {"when": "now", "depth": self.depth, "machine": {},
+                       "results": results, "save_error": message}
+                self.emit("done", doc, False)
+                return doc
+
+        bench.Runner = UnsavedRunner
+
+        async def go(app, pilot):
+            said = []
+            notify = app.notify
+
+            def record(text, **kw):
+                said.append((text, kw))
+                notify(text, **kw)
+
+            app.notify = record
+            await pilot.press("b")
+            await pilot.pause(0.1)
+            screen = app.screen
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if screen.doc:
+                    break
+            # The results stay in the table, and the reason is an error
+            # notification, shown as text: the path has brackets in it.
+            self.assertEqual(screen.row_ids, ["base", "base-nomtp"])
+            errors = [(t, kw) for t, kw in said
+                      if kw.get("severity") == "error"]
+            self.assertEqual([t for t, _ in errors], [message])
+            self.assertFalse(errors[0][1]["markup"])
         self.drive(go)
 
 

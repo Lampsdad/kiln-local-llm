@@ -21,7 +21,7 @@ CF_LOG="./cloudflared.log"
 
 # ── pre-flight checks ────────────────────────────────────────
 if [ ! -f "$BINARY" ]; then
-    echo "ERROR: $BINARY not found. Run ./install_fedora.sh first."
+    echo "ERROR: $BINARY not found. Run: ./kiln.sh setup"
     exit 1
 fi
 if [ ! -f "$MODEL" ]; then
@@ -39,14 +39,18 @@ kiln_model_args "$BINARY"
 
 # ── stop any running instances ───────────────────────────────
 echo "Stopping any existing instances..."
-pkill -x llama-server 2>/dev/null || true
-# Only the tunnel to this port: other cloudflared processes are not ours.
+# Only kiln's own server and the tunnel to this port: other llama-servers
+# and cloudflared processes are not ours.
+. "$SCRIPT_DIR/lib_server.sh"
+kiln_stop_server "$PORT" || true
 . "$SCRIPT_DIR/lib_tunnel.sh"
 kiln_stop_tunnel "$PORT" || true
 sleep 1
 
 # ── start llama-server ───────────────────────────────────────
 
+# No tunnel yet. The trap below reads CF_PID when Ctrl+C arrives.
+CF_PID=""
 echo "Starting llama-server..."
 "$BINARY" \
     --model        "$MODEL" \
@@ -65,6 +69,10 @@ echo "Starting llama-server..."
     "${EXTRA[@]}" \
     --log-file     "$LOG" &
 SERVER_PID=$!
+# Installed now, not with the tunnel: the health poll below takes
+# minutes, and a background job started by a script ignores SIGINT, so
+# without this Ctrl+C would leave the server holding the GPU.
+trap 'kiln_shutdown "$SERVER_PID" "$CF_PID"' INT TERM
 
 # ── wait for server to be ready (health poll) ────────────────
 echo "Waiting for server to load (1-2 min for a 30 GB model)..."
@@ -103,12 +111,17 @@ fi
 echo "Starting Cloudflare tunnel..."
 cloudflared tunnel --url "http://localhost:$PORT" >"$CF_LOG" 2>&1 &
 CF_PID=$!
-sleep 12
+TUNNEL_URL="$(kiln_wait_tunnel_url "$CF_LOG" "$CF_PID")"
 
 # ── print tunnel URL ─────────────────────────────────────────
 echo
 echo "============================================================"
-grep -o 'https://[^ ]*trycloudflare\.com' "$CF_LOG" | head -1 | xargs -I{} echo " Base URL: {}/v1"
+if [ -n "$TUNNEL_URL" ]; then
+    echo " Base URL: $TUNNEL_URL/v1"
+else
+    echo " WARNING: the tunnel URL has not appeared. Check $CF_LOG."
+    echo " Local URL: http://localhost:$PORT/v1"
+fi
 echo
 echo " API key (paste into Cursor's OpenAI API Key field):"
 echo "   $API_KEY"
@@ -119,5 +132,4 @@ echo
 echo "Press Ctrl+C to stop everything."
 
 # ── keep running until interrupted ───────────────────────────
-trap "echo; echo 'Shutting down...'; kill $SERVER_PID $CF_PID 2>/dev/null; exit 0" INT TERM
 wait $SERVER_PID

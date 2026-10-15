@@ -36,6 +36,7 @@ care who else holds it.
 """
 
 import codecs
+import glob
 import os
 import re
 import shutil
@@ -277,6 +278,9 @@ def shared_files():
 # and must not make a stale log's URL look live. The same rule as
 # scripts/unix/lib_tunnel.sh and scripts/windows/kiln_tunnel.ps1.
 TUNNEL_ARGS = r"tunnel .*--url http://(localhost|127\.0\.0\.1):%d( |$)"
+# The same rule for llama-server: kiln's is the one serving kiln's port,
+# as scripts/unix/lib_server.sh finds it.
+SERVER_ARGS = r"llama-server.* --port %d( |$)"
 
 
 def processes(plat, port):
@@ -284,7 +288,14 @@ def processes(plat, port):
     if plat == "windows":
         out = _output(_run(["tasklist", "/NH", "/FO", "CSV"])).lower()
         # The command line needs PowerShell, so only ask when some
-        # cloudflared.exe is running at all.
+        # llama-server.exe or cloudflared.exe is running at all.
+        llama = False
+        if '"llama-server.exe"' in out:
+            proc = _run(["powershell", "-NoProfile", "-ExecutionPolicy",
+                         "Bypass", "-File",
+                         os.path.join(HERE, "windows", "kiln_server.ps1"),
+                         "-Port", str(port)])
+            llama = proc is not None and proc.returncode == 0
         tunnel = False
         if '"cloudflared.exe"' in out:
             proc = _run(["powershell", "-NoProfile", "-ExecutionPolicy",
@@ -292,10 +303,17 @@ def processes(plat, port):
                          os.path.join(HERE, "windows", "kiln_tunnel.ps1"),
                          "-Port", str(port)])
             tunnel = proc is not None and proc.returncode == 0
-        return '"llama-server.exe"' in out, tunnel
+        return llama, tunnel
 
-    proc = _run(["pgrep", "-x", "llama-server"])
-    llama = proc is not None and proc.returncode == 0
+    llama = False
+    proc = _run(["pgrep", "-f", SERVER_ARGS % port])
+    if proc is not None and proc.returncode == 0:
+        # As for the tunnel below: pgrep -f matches the command line, and
+        # ps names the program.
+        for pid in proc.stdout.split():
+            comm = _output(_run(["ps", "-o", "comm=", "-p", pid])).strip()
+            if os.path.basename(comm) == "llama-server":
+                llama = True
     tunnel = False
     proc = _run(["pgrep", "-f", TUNNEL_ARGS % port])
     if proc is not None and proc.returncode == 0:
@@ -341,9 +359,13 @@ def roots(plat, port):
 def llama_health(root, key):
     """200 serving, 503 loading -- but only when it is llama-server that
     answers, judged by its replies rather than by the port being open.
-    0 for nothing, or for some other program."""
-    status, body = opencode._get(root + "/health", key)
+    0 for nothing, or for some other program. The key is sent only when an
+    older llama-server asks for it, which is after it has identified itself."""
+    status, body = opencode._get(root + "/health", "")
     doc = opencode._json(body)
+    if status == 401 and opencode._auth_error(doc):
+        status, body = opencode._get(root + "/health", key)
+        doc = opencode._json(body)
     if not isinstance(doc, dict):
         return 0
     if status == 200 and doc.get("status") == "ok":
@@ -369,7 +391,7 @@ def shadowed(port, key):
     127.0.0.1:<port>. Cursor pointed at localhost, and the Cloudflare
     tunnel, which forwards to localhost, would reach that program."""
     root = "http://127.0.0.1:%d" % port
-    return (opencode._get(root + "/health", key)[0] != 0
+    return (opencode._get(root + "/health", "")[0] != 0
             and llama_health(root, key) == 0)
 
 
@@ -529,6 +551,34 @@ def title_for(req):
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]")
 
+# Logs that could not be deleted when their job finished. On Windows a
+# server the job started still holds the file open, so it is tried again
+# when the next job finishes, and at shutdown.
+_undeleted_logs = set()
+_undeleted_lock = threading.Lock()
+
+
+def remove_logs(paths=()):
+    """Delete these job logs and any kept from before. Those that still
+    cannot be deleted are kept for the next attempt."""
+    with _undeleted_lock:
+        pending = _undeleted_logs | set(paths)
+        _undeleted_logs.clear()
+        for path in pending:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                _undeleted_logs.add(path)
+
+
+def sweep_logs():
+    """Delete the job logs that earlier runs left behind. A log that a
+    running server or job still holds open is skipped, as it should be."""
+    remove_logs(glob.glob(os.path.join(glob.escape(tempfile.gettempdir()),
+                                       "kiln-job-*.log")))
+
 
 class Job:
     """One kiln verb, and everything it has printed so far."""
@@ -596,15 +646,12 @@ class Job:
         self._finish(code, on_finish)
 
     def _finish(self, code, on_finish):
+        # Removed before the exit code is published, so whoever sees the
+        # job finish also sees its log gone.
+        remove_logs([self.log_path])
         with self._lock:
             self.code = code
             self.ended = time.time()
-        # On Windows a server started by this job still holds the file;
-        # it goes when the server does, or with the temp directory.
-        try:
-            os.remove(self.log_path)
-        except OSError:
-            pass
         on_finish()
 
     def _append(self, text, final=False):
@@ -689,6 +736,10 @@ class Control:
         self._slow = None
         self._slow_at = 0.0
         self._slow_lock = threading.Lock()
+        # Not on Unix: a removal never fails there, so nothing is left
+        # behind, and a sweep could take a log another kiln tui is writing.
+        if WINDOWS:
+            sweep_logs()
 
     # ---- state ------------------------------------------------
 
@@ -788,4 +839,10 @@ class Control:
             if job.running and job.action != "start":
                 job.cancel()
                 gone.append(job.title)
+        # Nothing reads a job's log once the front end has gone, and a
+        # start job's log holds the key. On Unix a server still running
+        # writes on into the deleted file; on Windows it holds the file
+        # open, so the next kiln tui sweeps it up.
+        remove_logs([job.log_path for job in self.jobs.values()
+                     if job.log_path])
         return gone

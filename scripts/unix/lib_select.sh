@@ -191,7 +191,16 @@ kiln_model_args() {
     if [ -n "${V_REASONING:-}" ]; then
         EXTRA+=(--reasoning "$V_REASONING")
     fi
-    if [ -n "$MTP" ] && "$bin" --help 2>&1 | grep -q 'draft-mtp'; then
+    # The help is read whole, not piped into grep -q: grep quits at the
+    # first match, and llama-server's SIGPIPE for the rest of its help
+    # then fails the pipeline under pipefail, which turns MTP off with
+    # no word about why. A smaller pipe buffer makes that likely.
+    local bin_help="" mtp_ok=0
+    if [ -n "$MTP" ]; then
+        bin_help="$("$bin" --help 2>&1 || true)"
+        case "$bin_help" in *draft-mtp*) mtp_ok=1 ;; esac
+    fi
+    if [ "$mtp_ok" = 1 ]; then
         EXTRA+=(--spec-type draft-mtp
                 --spec-draft-model "$MTP"
                 --spec-draft-ngl 99

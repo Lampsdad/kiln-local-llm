@@ -356,11 +356,12 @@ class FakeServer:
 
 
 class FakeControl(control.Control):
-    def __init__(self, server, start_exit=0):
+    def __init__(self, server, start_exit=0, says="kiln says hi"):
         control.Control.__init__(self)
         self.server = server
         self.calls = []
         self.start_exit = start_exit
+        self.says = says
 
     def spawn(self, action, title, args, env=None):
         self.calls.append((action, list(args), dict(env or {})))
@@ -371,8 +372,8 @@ class FakeControl(control.Control):
             self.server.stopped()
             code = 0
         self.command = lambda a, code=code: [
-            sys.executable, "-c", "import sys; print('kiln says hi');"
-            " sys.exit(%d)" % code]
+            sys.executable, "-c", "import sys; print(%r); sys.exit(%d)"
+            % (self.says, code)]
         return control.Control.spawn(self, action, title, args, env)
 
 
@@ -390,11 +391,12 @@ class Run(unittest.TestCase):
          control.locate, opencode.probe) = self.saved
         self.tmp.cleanup()
 
-    def run_bench(self, server, setups, depth="quick", cancel_after=None):
+    def run_bench(self, server, setups, depth="quick", cancel_after=None,
+                  says="kiln says hi"):
         bench._post = server.post
         control.locate = server.locate
         opencode.probe = server.probe
-        ctl = FakeControl(server)
+        ctl = FakeControl(server, says=says)
         events = []
 
         def emit(kind, *a):
@@ -465,6 +467,25 @@ class Run(unittest.TestCase):
         self.assertIn("kiln start failed", by_id["base"]["error"])
         self.assertIn("kiln says hi", by_id["base"]["log_tail"])
         self.assertEqual(by_id["9b"]["gen_tps"], 85.0)
+
+    def test_the_key_stays_out_of_a_failed_setups_log(self):
+        # start.bat prints the key, and the failing setup's last lines are
+        # saved to disk and can be copied from the benchmark screen.
+        saved = opencode.KEY_FILE
+        self.addCleanup(setattr, opencode, "KEY_FILE", saved)
+        opencode.KEY_FILE = os.path.join(self.tmp.name, "api_key.txt")
+        secret = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        with open(opencode.KEY_FILE, "w") as fh:
+            fh.write(secret)
+        server = FakeServer(fail={"base"})
+        _, _, doc = self.run_bench(server, self.setups()[:1],
+                                   says="API key : " + secret)
+        tail = doc["results"][0]["log_tail"]
+        self.assertIn("API key : <api key>", tail)
+        self.assertFalse(secret in tail, "the key reached the log tail")
+        with open(bench.RESULTS_FILE, encoding="utf-8") as fh:
+            self.assertFalse(secret in fh.read(),
+                             "the key reached the saved results")
 
     def test_requests_go_where_llama_server_answered(self):
         # Windows with a WSL or Docker forward holding 127.0.0.1:8080:
@@ -572,6 +593,48 @@ class Run(unittest.TestCase):
         self.assertEqual([r["id"] for r in bench.load()["results"]], ["base"])
         self.assertEqual(ctl.calls[-1][0], "stop")
         self.assertEqual(server.state, "stopped")
+
+    def locked(self, doc):
+        # What Windows says when OneDrive or antivirus holds the file.
+        raise PermissionError(13, "Permission denied", "kiln-benchmark.json")
+
+    def test_a_file_that_cannot_be_written_keeps_the_run(self):
+        saved = bench.write
+        self.addCleanup(setattr, bench, "write", saved)
+        bench.write = self.locked
+        server = FakeServer()
+        ctl, events, doc = self.run_bench(server, self.setups())
+        # Nothing escapes; the run is emitted and returned with what it
+        # measured, and the reason it was not saved.
+        self.assertEqual(events[-1], ("done", doc, False))
+        self.assertEqual([r["id"] for r in doc["results"]],
+                         ["base", "base-nomtp", "9b"])
+        self.assertEqual(doc["results"][0]["gen_tps"], 85.0)
+        self.assertIn("could not save", doc["save_error"])
+        self.assertIn("Permission denied", doc["save_error"])
+        self.assertFalse(os.path.exists(bench.RESULTS_FILE))
+        self.assertEqual(ctl.calls[-1][0], "stop")
+
+    def test_the_command_line_says_the_file_was_not_written(self):
+        saved = bench.write
+        self.addCleanup(setattr, bench, "write", saved)
+        bench.write = self.locked
+        server = FakeServer()
+        bench._post = server.post
+        control.locate = server.locate
+        opencode.probe = server.probe
+        ctl = FakeControl(server)
+        ctl.status = lambda: status([model("base")])
+        real = control.Control
+        self.addCleanup(setattr, control, "Control", real)
+        control.Control = type("Patched", (real,), {"__new__": lambda c: ctl})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = bench.main(["base"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not save", out.getvalue())
+        self.assertIn("Permission denied", out.getvalue())
+        self.assertNotIn("Saved to", out.getvalue())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
