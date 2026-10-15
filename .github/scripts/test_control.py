@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -318,7 +319,15 @@ class NextStep(unittest.TestCase):
                          "start")
         self.assertEqual(self.step(models=self.NONE), "get")
         self.assertEqual(self.step(), "start")
-        self.assertIsNone(self.step(state="ready"))
+
+    def test_a_ready_server_suggests_cursor_until_it_is_set_up(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        record = os.path.join(tmp.name, "cursor.json")
+        with mock.patch.object(control, "CURSOR_RECORD", record):
+            self.assertEqual(self.step(state="ready"), "cursor")
+            open(record, "w").close()
+            self.assertIsNone(self.step(state="ready"))
 
     def test_start_names_a_variant_on_disk(self):
         n = control.next_step("windows", self.LLAMA,

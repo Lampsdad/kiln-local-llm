@@ -10,6 +10,7 @@
 #    ./kiln.sh start [VARIANT] [--no-mtp]
 #    ./kiln.sh stop           stop server and tunnel
 #    ./kiln.sh key [show|rotate|set KEY]
+#    ./kiln.sh cursor         point Cursor at the model, and keep it there
 #    ./kiln.sh opencode       list the local models in OpenCode
 #    ./kiln.sh pi             list the local models in pi
 #    ./kiln.sh self-update    update kiln itself from GitHub
@@ -257,7 +258,9 @@ status() {
         echo "        Gemma 4 needs llama.cpp b${gmin} or newer; this is b${build}."
     elif [ -z "$running" ]; then
                                  echo " Next:  ./kiln.sh start    serve a model to Cursor"
-    else                         echo " Server is up. Point Cursor at the URL it printed."
+    elif [ -f .kiln/cursor.json ]; then
+                                 echo " Server is up. Cursor follows its tunnel."
+    else                         echo " Next:  ./kiln.sh cursor   connect Cursor to the server"
     fi
     printf '\n'
 }
@@ -298,6 +301,9 @@ usage() {
    stop              stop llama-server and cloudflared
    key [show|rotate|set KEY]
                      the API key Cursor needs; set KEY uses yours instead
+   cursor            point Cursor at the model and keep it there across
+                     restarts (--off to undo, --status, --print,
+                     --url URL for a tunnel of your own)
    opencode          list the local models in OpenCode on this machine
                      (--print to preview, --remove to undo,
                      --url URL to pin the server address)
@@ -382,6 +388,9 @@ case "$CMD" in
         # shellcheck source=scripts/unix/lib_tunnel.sh
         . "$UNIX/lib_tunnel.sh"
         kiln_stop_tunnel "$port" && echo " stopped cloudflared" || true
+        # With no tunnel, Cursor's OpenAI override points nowhere: off
+        # until the next start, if `kiln cursor` set it up.
+        KILN_PY="$PY" kiln_cursor_unfollow
         ;;
     key)
         case "$ARG" in
@@ -483,6 +492,17 @@ case "$CMD" in
         echo " ./kiln.sh get   downloads exactly this"
         echo " Set KILN_MIN_CTX to trade context against quant quality."
         echo
+        ;;
+    cursor)
+        if [ -z "$PY" ]; then
+            echo "kiln: needs python3 to edit Cursor's settings." >&2
+            exit 1
+        fi
+        # The key to paste into Cursor has to exist first.
+        # shellcheck source=scripts/unix/lib_api_key.sh
+        . "$UNIX/lib_api_key.sh"
+        shift
+        exec "$PY" "$ROOT/scripts/cursor.py" "$@"
         ;;
     opencode)
         if [ -z "$PY" ]; then

@@ -15,11 +15,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   provider needs llama-server's router mode, so it lists nothing for a
   server `kiln start` runs. The key is read from `api_key.txt` by a
   command rather than copied. `p` in `kiln tui` runs it.
-- **Cursor follows the quick tunnel.** `scripts/unix/cursor_tunnel.sh`
-  starts cloudflared and writes the new `*.trycloudflare.com` host into
-  Cursor's OpenAI base URL, with the API-key workaround on. Stopping
-  the tunnel turns that workaround off and clears a trycloudflare URL.
-  Cursor's saved key is left as it is: the desktop encrypts it.
+- **`kiln cursor`** (`./kiln.sh cursor`) sets Cursor up in one step. It
+  points Cursor's OpenAI base URL at the tunnel `kiln start` opened,
+  turns on the API-key override and lists the downloaded models. After
+  that `kiln start` points Cursor at each new tunnel and `kiln stop`
+  turns the override off. Changes wait for Cursor to close, which would
+  otherwise write its own copy back. From WSL it sets up the Windows
+  Cursor. `--off` gives back Cursor's own settings. The key is pasted
+  once: Cursor encrypts it, so kiln puts it on the clipboard instead.
+  `C` in `kiln tui` runs it. `scripts/unix/cursor_tunnel.sh` now goes
+  through it too.
 - **Gemma 4, opt-in.** `kiln get gemma-26b` and `kiln start gemma-26b`
   serve Google's Gemma 4. There are four variants: `gemma-31b`,
   `gemma-26b` (26B-A4B MoE), `gemma-12b` and `gemma-e4b`. Each one has

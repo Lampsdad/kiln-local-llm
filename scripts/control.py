@@ -62,6 +62,8 @@ CREATE_NO_WINDOW = 0x08000000
 # What the board checks on Windows, and the only place start.bat looks.
 CF_EXE_WINDOWS = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
 CF_LOGS = ("cloudflared-err.log", "cloudflared.log")
+# Left by `kiln cursor`: Cursor is set up and follows the tunnel.
+CURSOR_RECORD = os.path.join(ROOT, ".kiln", "cursor.json")
 TUNNEL = re.compile(r"https://[-a-z0-9]+(?:\.[-a-z0-9]+)*\.trycloudflare\.com",
                     re.I)
 
@@ -459,6 +461,9 @@ def next_step(plat, llama, models, state, rec):
     if state == "stopped":
         return {"action": "start", "variant": first_on_disk(models),
                 "label": "Start", "text": "Serve a model to Cursor"}
+    if state == "ready" and not os.path.exists(CURSOR_RECORD):
+        return {"action": "cursor", "label": "Cursor",
+                "text": "Connect Cursor to the server"}
     return None
 
 
@@ -496,6 +501,8 @@ def build_args(req):
         "key-rotate": ["key", "rotate"],
         "opencode": ["opencode"],
         "pi": ["pi"],
+        # Never waits: with Cursor open, the change is made once it closes.
+        "cursor": ["cursor", "--no-wait"],
         "self-update": ["self-update"],
         "self-update-check": ["self-update", "--check"],
     }
@@ -529,6 +536,7 @@ TITLES = {
     "key-rotate": "Rotate the API key",
     "opencode": "Set up OpenCode",
     "pi": "Set up pi",
+    "cursor": "Set up Cursor",
     "self-update": "Update kiln",
     "self-update-check": "Check for a kiln update",
 }

@@ -2,13 +2,14 @@
 # Run the Cursor quick tunnel and keep Cursor's OpenAI workaround in
 # step with it. cloudflared is a child of this process, not a pkill,
 # so a different cloudflared (T3's named tunnel) is left alone.
-# On the way out, cursor_sync.py down puts back the OpenAI settings Cursor
-# had before up, if it still points at a trycloudflare URL. systemd also
-# calls that on ExecStopPost.
+# Cursor follows it the way it follows kiln start, through cursor.py, once
+# `kiln cursor` has been run in this checkout. On the way out the override
+# goes off again; systemd can also run `cursor.py --unfollow` on
+# ExecStopPost.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SYNC=(python3 "$ROOT/scripts/unix/cursor_sync.py")
+CURSOR=(python3 "$ROOT/scripts/cursor.py")
 LOG="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-cursor-tunnel.log"
 # Fedora setup drops cloudflared in /usr/local/bin; the WSL/Debian
 # installer uses ~/.local/bin. Prefer PATH, then those two locations.
@@ -31,7 +32,7 @@ CF=(
 )
 
 down() {
-    "${SYNC[@]}" down || true
+    "${CURSOR[@]}" --unfollow || true
 }
 trap down EXIT
 
@@ -58,7 +59,9 @@ for _ in $(seq 1 60); do
     fi
     url="$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' "$LOG" | tail -n 1 || true)"
     if [ -n "$url" ]; then
-        if ! "${SYNC[@]}" up --url "$url"; then
+        if [ ! -f "$ROOT/.kiln/cursor.json" ]; then
+            echo "Run \`kiln cursor\` once to have Cursor follow this tunnel." >&2
+        elif ! "${CURSOR[@]}" --follow "$url"; then
             echo "Cursor settings were not updated. The tunnel is still up." >&2
         fi
         echo "Cursor base URL: ${url}/v1"

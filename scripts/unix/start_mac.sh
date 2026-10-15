@@ -110,6 +110,8 @@ if [ -n "${KILN_NO_TUNNEL:-}" ] || ! command -v cloudflared &>/dev/null; then
     else
         echo "WARNING: cloudflared not found. Skipping tunnel."
     fi
+    # Cursor reaches the model only through a tunnel.
+    kiln_cursor_unfollow
     echo "The API is reachable at http://localhost:$PORT/v1"
     echo "API key: $API_KEY"
     echo "Press Ctrl+C to stop the server."
@@ -121,6 +123,10 @@ echo "Starting Cloudflare tunnel..."
 cloudflared tunnel --url "http://localhost:$PORT" >"$CF_LOG" 2>&1 &
 CF_PID=$!
 TUNNEL_URL="$(kiln_wait_tunnel_url "$CF_LOG" "$CF_PID")"
+# Cursor follows the tunnel once `kiln cursor` has been run here.
+if [ -n "$TUNNEL_URL" ]; then
+    kiln_cursor_follow "$TUNNEL_URL/v1"
+fi
 
 # ── print tunnel URL ─────────────────────────────────────────
 echo
@@ -136,6 +142,10 @@ echo " API key (paste into Cursor's OpenAI API Key field):"
 echo "   $API_KEY"
 echo
 echo " The tunnel URL is public. Requests without the key are rejected."
+if [ ! -f .kiln/cursor.json ]; then
+    echo
+    echo " \`kiln cursor\` sets Cursor up, and keeps it on each new tunnel."
+fi
 echo "============================================================"
 echo
 echo "Press Ctrl+C to stop everything."
