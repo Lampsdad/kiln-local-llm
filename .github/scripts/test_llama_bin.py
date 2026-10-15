@@ -219,7 +219,7 @@ class SetupUsesIt(unittest.TestCase):
             return fh.read()
 
     def test_every_unix_installer(self):
-        for name, call in (("install_linux.sh", "kiln_install_llama_bin vulkan"),
+        for name, call in (("install_linux.sh", "kiln_install_llama_bin auto"),
                            ("install_fedora.sh", "kiln_install_llama_bin auto"),
                            ("install_mac.sh", 'kiln_install_llama_bin macos "$ARCH"')):
             with self.subTest(name):
