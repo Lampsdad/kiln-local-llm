@@ -565,12 +565,21 @@ def detect_gpu():
     # Apple Silicon: unified memory. Metal will not hand the whole
     # machine to one process -- recommendedMaxWorkingSetSize is
     # ~75% of RAM on Apple Silicon -- so budget that, not total RAM.
+    # Intel Macs are not unified: llama.cpp's macOS x64 build has no
+    # Metal, so the model runs on the CPU out of RAM. Half of RAM is
+    # budgeted for it, leaving the rest to macOS. Apple Silicon is told
+    # apart with hw.optional.arm64, not platform.machine(), which says
+    # x86_64 for Python running under Rosetta on Apple Silicon.
     if sys.platform == "darwin":
         out = _run(["sysctl", "-n", "hw.memsize"])
         if out and out.strip().isdigit():
             total = mib(int(out.strip()))
-            name = "Apple Silicon (unified memory)"
             brand = _run(["sysctl", "-n", "machdep.cpu.brand_string"])
+            arm = _run(["sysctl", "-n", "hw.optional.arm64"])
+            if not arm or arm.strip() != "1":
+                name = (brand or "").strip() or "Intel Mac"
+                return int(total * 0.5), name + " (CPU only, no Metal)", "cpu"
+            name = "Apple Silicon (unified memory)"
             if brand:
                 name = brand.strip() + " (unified memory)"
             return int(total * 0.75), name, "apple"

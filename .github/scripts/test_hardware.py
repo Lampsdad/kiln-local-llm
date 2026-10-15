@@ -19,6 +19,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -213,6 +214,59 @@ class Build(unittest.TestCase):
     def test_missing_binary(self):
         self.assertEqual(hardware.llama_build("/no/such/llama-server"), 0)
 
+
+
+class Mac(unittest.TestCase):
+    RAM_16 = str(16 * 2 ** 30)
+
+    def gpu(self, sysctl):
+        """detect_gpu() on a Mac whose sysctl answers are `sysctl`, a dict of
+        key to output. A key not in it makes its command fail, as it does on
+        an Intel Mac that lacks it."""
+        def run(cmd):
+            if cmd[0] == "sysctl":
+                return sysctl.get(cmd[-1])
+            return None   # no NVIDIA or ROCm tools on a Mac
+        with mock.patch.object(hardware.sys, "platform", "darwin"), \
+                mock.patch.object(hardware, "_run", run):
+            return hardware.detect_gpu()
+
+    def test_apple_silicon_keeps_the_unified_budget(self):
+        self.assertEqual(self.gpu({"hw.memsize": self.RAM_16,
+                                   "hw.optional.arm64": "1\n",
+                                   "machdep.cpu.brand_string": "Apple M2\n"}),
+                         (12288, "Apple M2 (unified memory)", "apple"))
+
+    def test_intel_mac_is_budgeted_as_cpu(self):
+        brand = "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz\n"
+        for arm in (None, "", "0\n"):
+            answers = {"hw.memsize": self.RAM_16, "machdep.cpu.brand_string": brand}
+            if arm is not None:
+                answers["hw.optional.arm64"] = arm
+            self.assertEqual(
+                self.gpu(answers),
+                (8192, "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (CPU only, no Metal)",
+                 "cpu"), repr(arm))
+        self.assertEqual(self.gpu({"hw.memsize": self.RAM_16}),
+                         (8192, "Intel Mac (CPU only, no Metal)", "cpu"))
+
+
+class Build(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "a shell script stands in for the binary")
+    def test_both_version_formats(self):
+        for text, want in (
+                ("version: 0.6.0-dev (build 11624, commit af0579c78)", 11624),
+                ("version: 9431 (94ca829b6)\nbuilt with Clang 20", 9431),
+                ("built with Clang 20", 0)):
+            with tempfile.TemporaryDirectory() as tmp:
+                exe = os.path.join(tmp, "llama-server")
+                with open(exe, "w") as fh:
+                    fh.write("#!/bin/sh\necho '%s' >&2\n" % text)
+                os.chmod(exe, 0o755)
+                self.assertEqual(hardware.llama_build(exe), want, text)
+
+    def test_missing_binary(self):
+        self.assertEqual(hardware.llama_build("/no/such/llama-server"), 0)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
