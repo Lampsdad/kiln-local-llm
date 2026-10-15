@@ -519,9 +519,26 @@ class BenchScreen(Screen):
         self.refresh_bindings()
         self.measure()
 
-    @work(thread=True, group="bench")
+    @work(thread=True, group="bench", exit_on_error=False)
     def measure(self):
-        self.runner.run()
+        try:
+            self.runner.run()
+        except Exception as e:
+            # Whatever was measured stays in the table, and the app stays
+            # up to show why the run stopped.
+            self.app.call_from_thread(self.run_failed, e)
+
+    def run_failed(self, e):
+        self.runner = None
+        self.states = {}
+        self.fill_table()
+        self.query_one("#progress").remove_class("running")
+        self.query_one("#step", Static).update(plain(
+            "The run stopped early. Press r to measure again."))
+        self.notify("Benchmark stopped: %s" % e, severity="error",
+                    timeout=15, markup=False)
+        self.refresh_bindings()
+        self.app.refresh_status()
 
     def set_row(self, sid):
         table = self.query_one("#results", DataTable)
@@ -562,6 +579,9 @@ class BenchScreen(Screen):
                 "Done. The server is stopped; press a to start a setup."))
             self.notify("Benchmark cancelled" if cancelled else
                         "Benchmark finished")
+            if doc and doc.get("save_error"):
+                self.notify(doc["save_error"], severity="error", timeout=15,
+                            markup=False)
             self.refresh_bindings()
             self.app.refresh_status()
 

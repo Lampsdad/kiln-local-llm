@@ -569,6 +569,100 @@ class App(unittest.TestCase):
                 self.assertEqual(lines, ["cancelled", "exited"], err)
                 self.assertEqual(proc.returncode, 0, err)
 
+    def test_a_benchmark_that_crashes_leaves_the_app_running(self):
+        bench = self.bench
+
+        class CrashingRunner:
+            def __init__(self, ctl, chosen, depth, emit):
+                self.chosen, self.emit = chosen, emit
+                self.results = []
+
+            def cancel(self):
+                pass
+
+            def run(self):
+                s = self.chosen[0]
+                self.emit("result", {
+                    "id": s.id, "variant": s.variant, "label": s.label,
+                    "quant": s.quant, "mtp": s.mtp, "no_mtp": s.no_mtp,
+                    "ctx_expected": s.ctx, "ctx": s.ctx, "load_s": 30.0,
+                    "prefill_tps": 3000.0, "accept_pct": 70.0,
+                    "gen_tps": 85.0})
+                raise RuntimeError("disk on fire")
+
+        bench.Runner = CrashingRunner
+
+        async def go(app, pilot):
+            await pilot.press("b")
+            await pilot.pause(0.1)
+            screen = app.screen
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if screen.runner is None:
+                    break
+            # The error is a notification; the screen is usable again and
+            # keeps the setup that was measured before the crash.
+            self.assertTrue(app.is_running)
+            self.assertIsNone(screen.runner)
+            self.assertEqual(screen.results["base"]["gen_tps"], 85.0)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            self.assertNotIsInstance(app.screen, self.tui_app.BenchScreen)
+        self.drive(go)
+
+    def test_a_result_that_could_not_be_saved_is_said_so_and_kept(self):
+        bench = self.bench
+        message = ("could not save kiln-benchmark.json: "
+                   "[Errno 13] Permission denied")
+
+        class UnsavedRunner:
+            def __init__(self, ctl, chosen, depth, emit):
+                self.chosen, self.depth, self.emit = chosen, depth, emit
+
+            def cancel(self):
+                pass
+
+            def run(self):
+                results = [{"id": s.id, "variant": s.variant, "label": s.label,
+                            "quant": s.quant, "mtp": s.mtp,
+                            "no_mtp": s.no_mtp, "ctx_expected": s.ctx,
+                            "ctx": s.ctx, "load_s": 30.0,
+                            "prefill_tps": 3000.0, "accept_pct": 70.0,
+                            "gen_tps": 85.0} for s in self.chosen]
+                doc = {"when": "now", "depth": self.depth, "machine": {},
+                       "results": results, "save_error": message}
+                self.emit("done", doc, False)
+                return doc
+
+        bench.Runner = UnsavedRunner
+
+        async def go(app, pilot):
+            said = []
+            notify = app.notify
+
+            def record(text, **kw):
+                said.append((text, kw))
+                notify(text, **kw)
+
+            app.notify = record
+            await pilot.press("b")
+            await pilot.pause(0.1)
+            screen = app.screen
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if screen.doc:
+                    break
+            # The results stay in the table, and the reason is an error
+            # notification, shown as text: the path has brackets in it.
+            self.assertEqual(screen.row_ids, ["base", "base-nomtp"])
+            errors = [(t, kw) for t, kw in said
+                      if kw.get("severity") == "error"]
+            self.assertEqual([t for t, _ in errors], [message])
+            self.assertFalse(errors[0][1]["markup"])
+        self.drive(go)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

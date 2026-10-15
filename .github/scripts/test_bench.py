@@ -573,5 +573,47 @@ class Run(unittest.TestCase):
         self.assertEqual(ctl.calls[-1][0], "stop")
         self.assertEqual(server.state, "stopped")
 
+    def locked(self, doc):
+        # What Windows says when OneDrive or antivirus holds the file.
+        raise PermissionError(13, "Permission denied", "kiln-benchmark.json")
+
+    def test_a_file_that_cannot_be_written_keeps_the_run(self):
+        saved = bench.write
+        self.addCleanup(setattr, bench, "write", saved)
+        bench.write = self.locked
+        server = FakeServer()
+        ctl, events, doc = self.run_bench(server, self.setups())
+        # Nothing escapes; the run is emitted and returned with what it
+        # measured, and the reason it was not saved.
+        self.assertEqual(events[-1], ("done", doc, False))
+        self.assertEqual([r["id"] for r in doc["results"]],
+                         ["base", "base-nomtp", "9b"])
+        self.assertEqual(doc["results"][0]["gen_tps"], 85.0)
+        self.assertIn("could not save", doc["save_error"])
+        self.assertIn("Permission denied", doc["save_error"])
+        self.assertFalse(os.path.exists(bench.RESULTS_FILE))
+        self.assertEqual(ctl.calls[-1][0], "stop")
+
+    def test_the_command_line_says_the_file_was_not_written(self):
+        saved = bench.write
+        self.addCleanup(setattr, bench, "write", saved)
+        bench.write = self.locked
+        server = FakeServer()
+        bench._post = server.post
+        control.locate = server.locate
+        opencode.probe = server.probe
+        ctl = FakeControl(server)
+        ctl.status = lambda: status([model("base")])
+        real = control.Control
+        self.addCleanup(setattr, control, "Control", real)
+        control.Control = type("Patched", (real,), {"__new__": lambda c: ctl})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = bench.main(["base"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not save", out.getvalue())
+        self.assertIn("Permission denied", out.getvalue())
+        self.assertNotIn("Saved to", out.getvalue())
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
