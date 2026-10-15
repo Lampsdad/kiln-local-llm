@@ -170,7 +170,7 @@ status() {
     elif [ "$PLATFORM" = mac ]; then
         # Metal is Apple Silicon only. llama.cpp's Intel build runs on the CPU.
         if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
-            printf '  %-14s %s\n' "GPU" "Apple $(sysctl -n machdep.cpu.brand_string 2>/dev/null) (Metal)"
+            printf '  %-14s %s\n' "GPU" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null) (Metal)"
         else
             printf '  %-14s %s\n' "GPU" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null) (CPU only)"
         fi
@@ -401,11 +401,16 @@ case "$CMD" in
                         exit 1
                         ;;
                 esac
-                ( umask 077; printf '%s' "$VALUE" > ./api_key.txt ) ||
-                    { echo "kiln: could not write api_key.txt" >&2; exit 1; }
-                # A write keeps the mode of a file that already exists, which
-                # may be world-readable, so lock it down again.
-                chmod 600 ./api_key.txt 2>/dev/null || true
+                # Written to a new file and renamed over the old one: writing
+                # into an existing file keeps its mode, which may be
+                # world-readable, and the new key would show through until a
+                # chmod caught up.
+                if ! ( umask 077; printf '%s' "$VALUE" > ./api_key.txt.tmp ) ||
+                   ! mv -f ./api_key.txt.tmp ./api_key.txt; then
+                    rm -f ./api_key.txt.tmp
+                    echo "kiln: could not write api_key.txt" >&2
+                    exit 1
+                fi
                 echo " key set"
                 echo " Restart the server to load it."
                 ;;

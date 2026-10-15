@@ -17,6 +17,7 @@ cloudflared.url.tmp
 
 # Server API key (generated per-machine by the start scripts)
 api_key.txt
+api_key.txt.tmp
 
 # Previous llama.cpp build kept by kiln update
 llama-bin-backup/

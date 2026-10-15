@@ -192,6 +192,7 @@ set "REC_MMPROJ_LOCAL="
 set "REC_CTX=0"
 set "REC_TOTAL_GB=%SIZE%"
 set "REC_BELOW_MIN=0"
+set "REC_BELOW_QUALITY=0"
 for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%HW%" --recommend --family "%V_ID%" --quant "%QUANT%" 2^>nul`) do set "%%A=%%B"
 
 set "FILE=%V_PREFIX%-%QUANT%.gguf"
@@ -211,6 +212,10 @@ if "%REC_BELOW_MIN%"=="1" (
     echo  [WARN] this leaves less context than agentic coding really
     echo         wants. A smaller quant, or one of the distill builds,
     echo         would give you a much larger window.
+)
+if "%REC_BELOW_QUALITY%"=="1" (
+    echo.
+    echo  NOTE: a low-bit quant, below the quality floor; expect weaker output.
 )
 echo.
 

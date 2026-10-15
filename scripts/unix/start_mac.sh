@@ -61,7 +61,7 @@ CF_PID=""
 # where an empty array counts as unset under set -u and the launch
 # dies. Before lib_select.sh added the sampling flags, EXTRA was
 # empty for any model without an MTP head or projector.
-echo "Starting llama-server (Metal)..."
+echo "Starting llama-server..."
 "$BINARY" \
     --model        "$MODEL" \
     ${FIT_ARGS[@]+"${FIT_ARGS[@]}"} \

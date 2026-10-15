@@ -402,8 +402,11 @@ class Serialising(unittest.TestCase):
                                          "import time; time.sleep(30)"]
 
     def tearDown(self):
+        # Waited for, so each job finishes and deletes its log here rather
+        # than after the test process has gone.
         for job in list(self.ctl.jobs.values()):
             job.cancel()
+            job.wait(20)
 
     def test_one_job_at_a_time_but_stop_always_runs(self):
         first = self.ctl.run({"action": "opencode"})

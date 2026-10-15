@@ -33,11 +33,6 @@ WINDOWS = sys.platform == "win32"
 # disk: GitHub release tags, asset names and URLs, and a port number.
 NOT_PATHS = {"TAG", "URL", "ZIP", "CUDART", "PORT"}
 
-# kiln.bat's :gather and :key_set are being changed in another piece of
-# work, so these two lines are not checked here. Delete the entries when
-# that change lands.
-OTHER_CHANGE = {("kiln.bat", "CF_LOG"), ("kiln.bat", "ARG2")}
-
 PS_COMMAND = re.compile(r"""(?:^|[\s(`"])powershell(?:\.exe)?\s""", re.IGNORECASE)
 SINGLE_QUOTED = re.compile(r"'[^']*'")
 CMD_VAR = re.compile(r"%(\w+)%")
@@ -93,13 +88,13 @@ class StaticChecks(unittest.TestCase):
             if not name.endswith(".bat"):
                 continue
             for number, var in path_interpolations(name):
-                if var not in NOT_PATHS and (name, var) not in OTHER_CHANGE:
+                if var not in NOT_PATHS:
                     found.append("%s:%d %%%s%%" % (name, number, var))
         self.assertEqual(found, [],
                          "pass paths through $env:, never inside '...'")
 
     def test_free_space_is_not_read_from_c_alone(self):
-        for name in ("download.bat", "cleanup.bat"):
+        for name in ("download.bat", "cleanup.bat", "kiln.bat"):
             self.assertEqual(code_lines_with(name, "Get-PSDrive C"), [], name)
 
     def test_no_menu_falls_back_to_the_first_quant(self):

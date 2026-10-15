@@ -15,6 +15,7 @@ so only its wiring is checked here.
 """
 import os
 import random
+import signal
 import subprocess
 import sys
 import tempfile
@@ -42,15 +43,21 @@ class OnlyOurs(unittest.TestCase):
         self.addCleanup(self.kill_all)
 
     def kill_all(self):
+        # Each child leads its own session, so the `sleep` a fake starts
+        # goes with it rather than outliving the test.
         for p in self.procs.values():
             if p.poll() is None:
-                p.kill()
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
                 p.wait()
 
     def spawn(self, name, *argv):
         self.procs[name] = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL,
                                             stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL)
+                                            stderr=subprocess.DEVNULL,
+                                            start_new_session=True)
 
     def tunnel(self, name, *args):
         self.spawn(name, self.fake, "tunnel", *args)
