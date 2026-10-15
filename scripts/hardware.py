@@ -734,6 +734,19 @@ def _score(fam, quant_idx, mtp_id, mmproj_id, ctx):
     )
 
 
+def _flagged(plan, fam):
+    """Say on the plan what it misses. below_min: its window is under the
+    bar. below_quality: its quant is past the family's quality floor. A
+    plan can clear the bar and still be below quality, so these are two
+    flags, not one."""
+    names = [q for q, _ in fam["quants"]]
+    if plan["ctx"] < MIN_CTX:
+        plan["below_min"] = True
+    if names.index(plan["quant"]) > fam.get("min_quality", len(names) - 1):
+        plan["below_quality"] = True
+    return plan
+
+
 def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
     """Best configuration of one family on this card, or None.
 
@@ -774,12 +787,11 @@ def plan_for(vram_mib, family_id, quant=None, quality_floor=True):
                 best, best_key = plan, key
 
     if best:
-        return best
+        return _flagged(best, fam)
     if quant and roomiest:
         # Pinned: report what that choice actually yields, even if it
         # is under the bar. Refusing to answer would be less useful.
-        roomiest["below_min"] = True
-        return roomiest
+        return _flagged(roomiest, fam)
     return None
 
 
@@ -792,8 +804,6 @@ def _roomiest(vram_mib, family_ids):
             plan = plan_for(vram_mib, fam_id, quant=quant)
             if plan and (roomiest is None or plan["ctx"] > roomiest["ctx"]):
                 roomiest = plan
-    if roomiest:
-        roomiest["below_min"] = True
     return roomiest
 
 
@@ -806,8 +816,6 @@ def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
         plan = plan_for(vram_mib, family, quant)
         if not plan:
             plan = plan_for(vram_mib, family, quant, quality_floor=False)
-            if plan:
-                plan["below_quality"] = True
         # A pinned quant that loads nowhere stays unloadable: another quant
         # would not be the one that was asked for.
         if not plan and not quant:
@@ -833,7 +841,6 @@ def recommend(vram_mib, allow_third_party=True, family=None, quant=None,
     for fam_id in families:
         plan = plan_for(vram_mib, fam_id, quality_floor=False)
         if plan:
-            plan["below_quality"] = True
             return plan
 
     return _roomiest(vram_mib, families)

@@ -236,6 +236,37 @@ class Sizing(unittest.TestCase):
         self.assertEqual((r["REC_OK"], r["REC_FAMILY"]), ("1", "base"))
         self.assertEqual(r["REC_BELOW_QUALITY"], "1")
 
+    def test_a_pinned_quant_is_flagged_by_what_it_misses(self):
+        # UD-IQ2_S is past the quality floor, but its window clears the bar
+        # on a 32 GB card: below quality, not below the bar.
+        p = hardware.recommend(CARD_32, family="base", quant="UD-IQ2_S")
+        self.assertIn("below_quality", p)
+        self.assertNotIn("below_min", p)
+        # UD-IQ3_S gets too little window on a 16 GB card.
+        p = hardware.recommend(CARD_16, family="base", quant="UD-IQ3_S")
+        self.assertIn("below_min", p)
+        self.assertLess(p["ctx"], hardware.MIN_CTX)
+
+    def test_flags_say_what_a_plan_misses(self):
+        # below_min exactly when the window is under the bar, and
+        # below_quality exactly when the quant is past the family's floor.
+        for vram in range(2048, 98304, 4096):
+            plans = [hardware.recommend(vram)]
+            for fid, fam in M.items():
+                plans.append(hardware.recommend(vram, family=fid))
+                for quant in [None] + [q for q, _ in fam["quants"]]:
+                    for relaxed in (True, False):
+                        plans.append(hardware.plan_for(vram, fid, quant, relaxed))
+            for p in plans:
+                if p is None:
+                    continue
+                names = [q for q, _ in M[p["family"]]["quants"]]
+                floor = M[p["family"]].get("min_quality", len(names) - 1)
+                where = (vram, p["family"], p["quant"])
+                self.assertEqual("below_min" in p, p["ctx"] < hardware.MIN_CTX, where)
+                self.assertEqual("below_quality" in p,
+                                 names.index(p["quant"]) > floor, where)
+
 
 class Quants(unittest.TestCase):
     def test_the_menu_default_is_the_quant_recommend_picks(self):
