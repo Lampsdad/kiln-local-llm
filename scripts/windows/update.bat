@@ -13,10 +13,11 @@ cd /d "%~dp0..\.."
 ::  Gemma 4 needs b11059 or newer for its draft head, vision and
 ::  tool-call fixes.
 ::
-::  Target: the newest win-cuda-*-x64 build the release ships
-::  (13.4 as of b11000; the RTX 5090 / Blackwell needs 12.8+), with
-::  the cudart zip of the SAME CUDA version. The minor version moves:
-::  pinning 13.3 broke this script the day llama.cpp went to 13.4.
+::  Target: the newest win-cuda-*-x64 build the release ships whose
+::  CUDA major version the driver speaks (13.5 as of b12600; the RTX
+::  5090 / Blackwell needs 12.8+), with the cudart zip of the SAME
+::  CUDA version. The minor version moves: pinning 13.3 broke this
+::  script the day llama.cpp went to 13.4.
 :: ============================================================
 
 set BACKUP=llama-bin-backup
@@ -67,6 +68,17 @@ if "%TAG%"=="" (
 echo  Latest build    : %TAG%
 echo.
 
+:: ---- the driver's CUDA major version ----
+:: A CUDA build runs on any driver of its own major version (CUDA
+:: minor version compatibility: b12600's 13.5 build ran on a driver
+:: reporting 13.4, 2026-11-21). By NVIDIA's rules a 13.x build cannot
+:: start on a 12.x driver (not tested here). nvidia-smi prints "CUDA Version: 13.4", or "CUDA UMD
+:: Version: 13.4" from 615.65 on. When it cannot be read, every build
+:: counts, as before.
+set "KILN_CUDA_MAJOR="
+for /f "usebackq delims=" %%M in (`powershell -NoProfile -Command "try { $t = (nvidia-smi) -join ' ' } catch { $t = '' }; if ($t -match 'CUDA (UMD )?Version: *([0-9]+)\.') { $Matches[2] }"`) do set "KILN_CUDA_MAJOR=%%M"
+if defined KILN_CUDA_MAJOR echo  Driver CUDA     : %KILN_CUDA_MAJOR%.x
+
 :: ---- which build of it ----
 :: Each line PowerShell prints is "<sort key> <llama zip> <cudart
 :: zip>", best CUDA version first; the first line wins. Only builds
@@ -76,11 +88,18 @@ echo.
 :: `if COND set A & set B` would run set B for every line.
 set "ZIP="
 set "CUDART="
-for /f "usebackq tokens=2,3" %%A in (`powershell -NoProfile -Command "$r = Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/%TAG%'; $n = @($r.assets | ForEach-Object { $_.name }); $n | Where-Object { $_ -match '^llama-b[0-9]+-bin-win-cuda-[0-9]+\.[0-9]+-x64\.zip$' } | ForEach-Object { $v = $_ -replace '^.*-cuda-([0-9]+\.[0-9]+)-x64\.zip$','$1'; $c = 'cudart-llama-bin-win-cuda-' + $v + '-x64.zip'; if ($n -contains $c) { '{0:D3}{1:D3} {2} {3}' -f [int]$v.Split('.')[0], [int]$v.Split('.')[1], $_, $c } } | Sort-Object -Descending"`) do if not defined ZIP (set "ZIP=%%A" & set "CUDART=%%B")
+for /f "usebackq tokens=2,3" %%A in (`powershell -NoProfile -Command "$r = Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/%TAG%'; $n = @($r.assets | ForEach-Object { $_.name }); $n | Where-Object { $_ -match '^llama-b[0-9]+-bin-win-cuda-[0-9]+\.[0-9]+-x64\.zip$' } | Where-Object { -not $env:KILN_CUDA_MAJOR -or [int]($_ -replace '^.*-cuda-([0-9]+)\..*$','$1') -le [int]$env:KILN_CUDA_MAJOR } | ForEach-Object { $v = $_ -replace '^.*-cuda-([0-9]+\.[0-9]+)-x64\.zip$','$1'; $c = 'cudart-llama-bin-win-cuda-' + $v + '-x64.zip'; if ($n -contains $c) { '{0:D3}{1:D3} {2} {3}' -f [int]$v.Split('.')[0], [int]$v.Split('.')[1], $_, $c } } | Sort-Object -Descending"`) do if not defined ZIP (set "ZIP=%%A" & set "CUDART=%%B")
 if not defined ZIP (
     echo  ERROR: %TAG% has no Windows x64 CUDA build with a matching
     echo  cudart zip. See https://github.com/ggml-org/llama.cpp/releases
+    if defined KILN_CUDA_MAJOR echo  The driver speaks CUDA %KILN_CUDA_MAJOR%.x. A newer NVIDIA driver may help.
     pause & exit /b 1
+)
+if "%KILN_CUDA_MAJOR%"=="12" (
+    echo  The driver speaks CUDA 12, so this is a CUDA 12 build: %ZIP%
+    echo  An RTX 50 series card needs one for CUDA 12.8 or newer. If this
+    echo  is older, update the NVIDIA driver ^(580 or newer speaks CUDA 13^)
+    echo  and run kiln update again.
 )
 set URL=https://github.com/ggml-org/llama.cpp/releases/download/%TAG%/%ZIP%
 

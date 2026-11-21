@@ -95,8 +95,9 @@ PY="$KILN_PY"
 . "$UNIX/lib_server.sh"
 
 # Every family the registry knows. Qwen3.8 is what kiln picks for
-# you; Gemma 4 runs only when named.
-VARIANTS="base, ablit, 9b, 4b, gemma-31b, gemma-26b, gemma-12b, gemma-e4b"
+# you; Gemma 4 and Inkling 2 Mini run when named, or when one of them
+# is all that is on disk.
+VARIANTS="base, ablit, 9b, 4b, gemma-31b, gemma-26b, gemma-12b, gemma-e4b, inkling-mini"
 
 # A family id hardware.py knows. The Qwen ids pass without Python
 # too, so lib_variants.sh can say what is missing.
@@ -106,6 +107,14 @@ is_variant() {
         base|ablit|9b|4b) return 0 ;;
     esac
     [ -n "$PY" ] && "$PY" "$ROOT/scripts/hardware.py" --variant "$1" >/dev/null 2>&1
+}
+
+# The oldest llama.cpp build a family runs on, or 0 when Python cannot
+# say.
+min_build_of() {
+    [ -n "$PY" ] || { echo 0; return; }
+    "$PY" "$ROOT/scripts/hardware.py" --variant "$1" 2>/dev/null |
+        kiln_strip_cr | sed -n 's/^V_MIN_BUILD=//p' | head -1
 }
 
 # ---- status board ------------------------------------------
@@ -224,6 +233,12 @@ status() {
         [ -e "$f" ] || continue
         printf '  %-14s %s\n' "Gemma 4" "$(basename "$f")"; found=1; gemma=1
     done
+    # Inkling 2 Mini likewise. Its projectors are mmproj-Inkling-*.
+    local inkling=0
+    for f in ./models/Inkling-2-Mini-*.gguf; do
+        [ -e "$f" ] || continue
+        printf '  %-14s %s\n' "Inkling 2 Mini" "$(basename "$f")"; found=1; inkling=1
+    done
     [ "$found" = 0 ] && printf '  %-14s %s\n' "weights" "none         ./kiln.sh get"
 
     printf ' %s\n' '------------------------------------------------------------'
@@ -246,16 +261,23 @@ status() {
 
     # The first unmet dependency, so following it repeatedly walks
     # an empty checkout all the way to a served model.
-    local gmin=0
-    if [ "$gemma" = 1 ] && [ -n "$PY" ]; then
-        gmin="$("$PY" "$ROOT/scripts/hardware.py" --variant gemma-12b 2>/dev/null |
-                kiln_strip_cr | sed -n 's/^V_MIN_BUILD=//p' | head -1)"
+    # The opt-in lines on disk that need a newer llama.cpp than
+    # Qwen does. The newest requirement wins, since one build serves
+    # them all.
+    local gmin=0 gname="" _min
+    if [ "$gemma" = 1 ]; then
+        _min="$(min_build_of gemma-12b)"
+        if [ "${_min:-0}" -gt "$gmin" ]; then gmin="$_min"; gname="Gemma 4"; fi
+    fi
+    if [ "$inkling" = 1 ]; then
+        _min="$(min_build_of inkling-mini)"
+        if [ "${_min:-0}" -gt "$gmin" ]; then gmin="$_min"; gname="Inkling 2 Mini"; fi
     fi
     if   [ ! -x "$bin" ];   then echo " Next:  ./kiln.sh setup    install llama.cpp"
     elif [ "$found" = 0 ];  then echo " Next:  ./kiln.sh get      download the weights"
     elif [ "${build:-0}" -gt 0 ] && [ "${build:-0}" -lt "${gmin:-0}" ]; then
         echo " Next:  mv llama-bin llama-bin-backup && ./kiln.sh setup"
-        echo "        Gemma 4 needs llama.cpp b${gmin} or newer; this is b${build}."
+        echo "        ${gname} needs llama.cpp b${gmin} or newer; this is b${build}."
     elif [ -z "$running" ]; then
                                  echo " Next:  ./kiln.sh start    serve a model to Cursor"
     elif [ -f .kiln/cursor.json ]; then
@@ -330,7 +352,9 @@ usage() {
    base ablit 9b 4b       Qwen3.8: 27B, 27B abliterated, 9B and 4B
                           distills. kiln picks from these for you.
    gemma-31b gemma-26b    Gemma 4: 31B dense, 26B-A4B MoE, 12B and
-   gemma-12b gemma-e4b    E4B. Only when named. Needs llama.cpp b11059+.
+   gemma-12b gemma-e4b    E4B. Opt-in. Needs llama.cpp b11059+.
+   inkling-mini           Inkling 2 Mini: 26B MoE, 3.4B active, 32 GB
+                          and up. Opt-in. Needs llama.cpp b12600+.
 
 USAGE
 }

@@ -8,7 +8,7 @@
 ::  Sets:    V_ID V_LABEL V_REPO V_PREFIX V_ALIAS V_UNCENSORED
 ::           V_THIRD_PARTY V_MTP V_VISION V_PARAMS V_QUANTS
 ::           V_MTP_FILES V_MMPROJ_FILES V_SPEC_N V_SAMPLING
-::           V_REASONING V_MIN_BUILD
+::           V_REASONING V_MIN_BUILD V_UBATCH V_NGRAM V_EFFORT
 ::  Returns: errorlevel 1 on an unknown id
 ::
 ::  Deliberately has NO setlocal -- the caller wants these
@@ -22,7 +22,7 @@
 ::
 ::  The hardcoded base/ablit block below is the fallback for one
 ::  case: Python missing on a machine that already has weights on
-::  disk. Every other family (9b, 4b, Gemma 4) is Python-path only
+::  disk. Every other family (9b, 4b, Gemma 4, Inkling) is Python-path only
 ::  -- you could not have downloaded it without Python anyway.
 ::
 ::  Why base and ablit share their MTP head and vision projector:
@@ -51,6 +51,9 @@ set "V_SPEC_N=3"
 set "V_SAMPLING="
 set "V_REASONING="
 set "V_MIN_BUILD=0"
+set "V_UBATCH="
+set "V_NGRAM="
+set "V_EFFORT="
 
 :: ---- registry lookup ---------------------------------------
 :: %~dp0..\hardware.py -- scripts\windows\ -> scripts\

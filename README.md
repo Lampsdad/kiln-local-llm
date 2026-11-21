@@ -29,6 +29,7 @@ folder.
 [Why Qwen3.8 is different](#what-makes-qwen38-27b-different) ·
 [Choosing a build](#choosing-a-build) ·
 [Gemma 4 (opt-in)](#gemma-4-opt-in) ·
+[Inkling 2 Mini (opt-in)](#inkling-2-mini-opt-in) ·
 [Choosing a quant](#choosing-a-quant) ·
 [Using with Cursor](#using-with-cursor) ·
 [Using with OpenCode](#using-with-opencode) ·
@@ -456,8 +457,8 @@ default.
 
 Two variants of the 27B are wired up. `kiln start` shows both, marks
 which are on disk, and downloads the one you pick. (The smaller
-distills are [above](#the-smaller-models), and Gemma 4 is
-[below](#gemma-4-opt-in).)
+distills are [above](#the-smaller-models), and Gemma 4 and Inkling 2
+Mini are [below](#gemma-4-opt-in).)
 
 | | Stock | Abliterated |
 |---|---|---|
@@ -499,8 +500,9 @@ what the tuning numbers below were measured on.
 
 Google's [Gemma 4](https://huggingface.co/collections/google/gemma-4)
 is wired up as a second model line. **kiln never picks it for you.**
-`kiln hardware`, a bare `kiln get` and a bare `kiln start` all stay on
-Qwen3.8. Gemma runs when you name it:
+`kiln hardware` and a bare `kiln get` stay on Qwen3.8, and so does a
+bare `kiln start` while any Qwen3.8 build is on disk; with only Gemma
+downloaded, that is what it runs. Otherwise Gemma runs when you name it:
 
 ```bat
 kiln get gemma-26b        :: sized to this GPU, like any other build
@@ -572,6 +574,122 @@ back as proper tool calls.
 - **E4B keeps its per-layer embedding table in system RAM** (1.5–2.9 GB,
   depending on the quant), so it needs that much less VRAM than its
   file size suggests.
+
+---
+
+## Inkling 2 Mini (opt-in)
+
+Thinking Machines' [Inkling 2 Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini)
+(Apache-2.0, released 2026-11-20) is a third opt-in line. It is a
+26B mixture of experts with 3.4B parameters active per token, and it
+takes images. Like Gemma, **kiln never picks it for you**: a bare `kiln
+get` never fetches it, and a bare `kiln start` runs it only when it is
+the only model on disk. Otherwise it runs when you name it:
+
+```bat
+kiln get inkling-mini     :: sized to this GPU, like any other build
+kiln start inkling-mini
+```
+
+| Variant | Model | What it is | Cursor model name |
+|---|---|---|---|
+| `inkling-mini` | Inkling 2 Mini | mixture of experts, 3.4B active; 32 GB and up | `inkling-2-mini` |
+
+The weights come from [ggml-org's GGUF repo](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF):
+`Q8_0` and an imatrix `IQ4_NL`, plus a BF16 or Q8_0 vision projector.
+unsloth's UD quants are not used. They are laid out for unsloth's own
+llama.cpp fork, and the llama.cpp kiln installs is upstream's, which
+loads only ggml-org's layout. There is no draft head: unsloth's DSpark
+drafter goes with their files and fork. kiln runs llama.cpp's n-gram
+speculation instead (`--spec-type ngram-mod`), which needs no model;
+see below.
+
+**It needs llama.cpp b12600 or newer**, the first build with
+[#32694](https://github.com/ggml-org/llama.cpp/pull/32694). On Windows
+that is `kiln update`. On macOS and Linux, `mv llama-bin
+llama-bin-backup && ./kiln.sh setup`. `kiln start` refuses an older
+build before it stops the running server.
+
+**What each card runs, if you ask for Inkling 2 Mini**
+
+| Card | Model | Quant | MTP | Vision | Context |
+|---|---|---|---|---|---|
+| 12 GB | — | — | — | — | does not fit |
+| 16 GB | — | — | — | — | does not fit |
+| 24 GB | Inkling 2 Mini | `IQ4_NL` | off | off | 48K, under the 96K bar |
+| 32 GB | Inkling 2 Mini | `IQ4_NL` | off | bf16 | 144K |
+| 48 GB | Inkling 2 Mini | `Q8_0` | off | bf16 | 228K |
+
+`python scripts/hardware.py --table inkling` prints the per-quant
+matrix. A 24 GB card loads it, but with only about half the 96K window
+kiln wants for Cursor's agent. `kiln get` warns that the window is
+short, `kiln start` points at the Qwen build that fits, and either one
+still serves Inkling if you ask. `Q8_0` reaches only 20K on a 32 GB
+card with vision, 28K without. Only the 32 GB row was loaded. The 24 GB and 48 GB rows, and
+`Q8_0` anywhere, are the same arithmetic, not measured.
+
+Measured on the 5090 at b12600, `IQ4_NL`:
+
+| | |
+|---|---|
+| Whole card in use, desktop included, `kiln start` at 144K with vision | 29,367 of 32,607 MiB; 29,895 after a 123K-token prompt |
+| Generation | 71 t/s on a short prompt, 50 t/s at 123K tokens deep |
+| Prefill, `llama-bench` (no projector, `-b 4096 -ub 256`) | 1,192 t/s over 16K tokens, 1,027 over 32K |
+| Prefill, `kiln start`, one 123K-token prompt | 551 t/s |
+| Windows, `kiln.bat start` on the CUDA 13.5 build | 30,105 MiB at load; 83 t/s; a 115K-token prompt at 665 t/s |
+
+Tool calls with `tool_choice` set to `auto` and to `required` both came
+back as proper tool calls, and it described an image correctly. With a
+password hidden at the end of a 123K-token prompt, it found it.
+
+**Against Qwen3.8-27B on the same card** (b12600, `llama-bench`, q8_0
+KV): with Qwen's MTP head off, Inkling generates 77 t/s to Qwen's 65,
+and 60 to 49 at 96K deep. kiln runs Qwen with its head, at 98–134 t/s
+on the same prompts, so Qwen is the faster of the two. Qwen also reads
+prompts 2.5–3.6× faster: 3,508 against 1,437 t/s for a 4K prompt, and
+3,072 against 855 with 32K already in context. Inkling's tokenizer
+needs 8–15% more tokens for the same text, so its 144K holds about what
+125–135K of Qwen's would. Inkling often answers sooner anyway, because
+it thinks less: 10–11 s against 15–17 s for a short explanation. Why it
+is not faster than 3.4B active suggests is in `NOTES.md`.
+
+**How it differs:**
+
+- **It is a looped transformer.** Layers 6–17 of its 24 run three times
+  per token, and each pass keeps its own KV cache. Five of every six
+  layers use a 1,024-token sliding window, so only 8 global layer
+  passes grow with context, and its KV cache is just 17 KB a token.
+- **But its attention bias is not cheap.** It has no RoPE. A learned
+  relative-position bias carries the positions, and llama.cpp builds
+  that bias in full: context × ubatch × 24 heads, in f32, twice. That
+  costs about 200 bytes per token of context per ubatch row. At ubatch
+  256 that is three times the KV cache. So **Inkling runs at
+  `--ubatch-size 256`**, not the 512 or 1024 the start scripts use for
+  everything else. At 1024, 256K of context would need 50 GB for the
+  bias alone. 256 prefills about a fifth slower than 512, but 512 would
+  leave only 80K on 32 GB. The measurements are in `scripts/hardware.py`,
+  above the Inkling entry.
+- **It always thinks.** The template's default reasoning effort is
+  `high`, and the thinking lands in `reasoning_content`. A client can
+  send `reasoning_effort` (`none` to `max`), as a request field or in
+  `chat_template_kwargs`. **kiln starts it at `medium`**
+  (`--reasoning-effort medium`). On a coding prompt that cut the answer
+  from 2–2.5 minutes at `high` to 40–50 seconds, and `low` took 22–33.
+  `high` passed more of that prompt's tests (two answers at each level),
+  so ask for it on a hard problem; a request's own `reasoning_effort`
+  wins. pi's thinking levels do not reach it: pi sends Qwen's
+  `enable_thinking` switch, which Inkling's template ignores, so pi gets
+  `medium`.
+- **N-gram speculation instead of a draft head.** `ngram-mod` looks
+  for the text being written earlier in the context and drafts from
+  there. Checking 8 drafted tokens takes 22 ms against 13 ms for
+  generating one, so a draft that matches is cheap. Rewriting code it was
+  given ran at 100–110 t/s instead of 74. New code found few matches
+  and ran about 5% slower; prose, arithmetic and questions about a
+  long file found none and came out byte-identical.
+- **Plain sampling**: temperature 1.0 with top-p and top-k off. That is
+  the checkpoint's own `generation_config.json`, and what unsloth
+  recommends.
 
 ---
 
@@ -844,7 +962,7 @@ NOTES.md               why the tuned constants are what they are
 | `install.bat` | One-time setup: llama.cpp binaries, cloudflared, `models/`. Takes the newest CUDA build of the newest bNNNN release, with its matching cudart. |
 | `update.bat` | Upgrade llama.cpp to the latest release and its matching cudart, backing up the old build. Verifies MTP support afterward. |
 | `download.bat` | Weights + MTP head + vision projector, for one build. Resumable. |
-| `launch.bat` | Model picker: every build, Qwen and Gemma, downloading first if needed. Takes a variant name (`base`, `gemma-26b`, ...) to skip the menu. |
+| `launch.bat` | Model picker: every build, Qwen, Gemma and Inkling, downloading first if needed. Takes a variant name (`base`, `gemma-26b`, ...) to skip the menu. |
 | `start.bat` | Tuned launcher. Auto-detects build, quant, MTP, vision, VRAM and cores. |
 | `probe_hardware.ps1` | Fallback sizer for machines without Python. `hardware.py` is the normal path. |
 | `benchmark.bat` | Quant speed, ubatch sweep, KV precision, throughput vs depth. |

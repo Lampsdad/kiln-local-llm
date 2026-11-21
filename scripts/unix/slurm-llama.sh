@@ -40,6 +40,13 @@ kiln_stop_tunnel "$PORT" || true
 # Per-family flags: sampling, MTP head, vision (lib_select.sh).
 kiln_model_args "$BINARY"
 
+# 1024 unless the family pins its own, which kiln_model_args then puts
+# in EXTRA. llama.cpp warns when --ubatch-size is given twice.
+UBATCH_ARGS=(--ubatch-size 1024)
+if [ -n "${V_UBATCH:-}" ]; then
+  UBATCH_ARGS=()
+fi
+
 exec "$BINARY" \
   --model "$MODEL" \
   --n-gpu-layers 99 \
@@ -49,7 +56,7 @@ exec "$BINARY" \
   --cache-type-v q8_0 \
   --parallel 1 \
   --batch-size 4096 \
-  --ubatch-size 1024 \
+  ${UBATCH_ARGS[@]+"${UBATCH_ARGS[@]}"} \
   --threads 6 \
   --jinja \
   --reasoning-format deepseek \

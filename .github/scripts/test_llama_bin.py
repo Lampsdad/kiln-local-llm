@@ -114,8 +114,9 @@ exec %s "$@"
 '''
 
 
-@unittest.skipIf(sys.platform == "win32", "lib_llama_bin.sh is the macOS/Linux half")
-class Install(unittest.TestCase):
+class Sandbox(unittest.TestCase):
+    """A repo folder, fixture releases and stubs for curl and nvidia-smi."""
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -161,6 +162,9 @@ class Install(unittest.TestCase):
     def bin(self, *parts):
         return os.path.join(self.root, "llama-bin", *parts)
 
+
+@unittest.skipIf(sys.platform == "win32", "lib_llama_bin.sh is the macOS/Linux half")
+class Install(Sandbox):
     def test_apple_silicon_gets_the_metal_build(self):
         r = self.install("macos", "arm64")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -282,6 +286,71 @@ echo
         r = self.install("vulkan")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("does not advertise draft-mtp", r.stdout)
+
+
+# b12600's Ubuntu CUDA builds: 12.8 and 13.5, each with its cudart.
+B12600_CUDA = [
+    "llama-b12600-bin-ubuntu-cuda-12.8-x64.tar.gz",
+    "cudart-llama-b12600-bin-ubuntu-cuda-12.8-x64.tar.gz",
+    "llama-b12600-bin-ubuntu-cuda-13.5-x64.tar.gz",
+    "cudart-llama-b12600-bin-ubuntu-cuda-13.5-x64.tar.gz",
+    "llama-b12600-bin-ubuntu-vulkan-x64.tar.gz",
+    "llama-b12600-bin-ubuntu-x64.tar.gz",
+]
+
+
+@unittest.skipIf(sys.platform == "win32", "lib_llama_bin.sh is the macOS/Linux half")
+class CudaChoice(Sandbox):
+    """Which CUDA build a driver gets. A build runs on any driver of its
+    own major version, so a 13.4 driver takes the 13.5 build. A 12.x
+    driver cannot start a 13.x build at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.use(B12600_CUDA)
+
+    def use(self, names):
+        self.releases([release("b12600", names)])
+        for name in names:
+            build_tarball(os.path.join(self.fix, name), name)
+
+    def driver(self, version):
+        self.write_stub("nvidia-smi", "#!/bin/sh\n"
+                        "echo '| NVIDIA-SMI 616.64   KMD Version: 616.64   "
+                        "CUDA UMD Version: %s |'\n" % version)
+
+    def fetched(self):
+        return [u.rsplit("/", 1)[1] for u in self.requests()
+                if "/releases/download/" in u]
+
+    def test_a_13_driver_takes_the_newest_13_build(self):
+        self.driver("13.4")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("b12600 (cuda)", r.stdout)
+        self.assertEqual(self.fetched(),
+                         ["llama-b12600-bin-ubuntu-cuda-13.5-x64.tar.gz",
+                          "cudart-llama-b12600-bin-ubuntu-cuda-13.5-x64.tar.gz"])
+
+    def test_a_12_driver_never_gets_a_13_build(self):
+        self.driver("12.9")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.fetched()[0], "llama-b12600-bin-ubuntu-cuda-12.8-x64.tar.gz")
+
+    def test_a_12_driver_with_only_13_builds_gets_vulkan(self):
+        self.use([n for n in B12600_CUDA if "cuda-12.8" not in n])
+        self.driver("12.9")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("b12600 (vulkan)", r.stdout)
+
+    def test_a_build_without_its_cudart_is_skipped(self):
+        self.use([n for n in B12600_CUDA if n != "cudart-llama-b12600-bin-ubuntu-cuda-13.5-x64.tar.gz"])
+        self.driver("13.4")
+        r = self.install("auto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.fetched()[0], "llama-b12600-bin-ubuntu-cuda-12.8-x64.tar.gz")
 
 
 class SetupUsesIt(unittest.TestCase):

@@ -87,6 +87,7 @@ echo     [5] Gemma 4 31B              Google, dense, 32 GB and up
 echo     [6] Gemma 4 26B-A4B          Google, MoE with 4B active, fast
 echo     [7] Gemma 4 12B              Google, dense, 12-16 GB
 echo     [8] Gemma 4 E4B              Google, small, weak at tool calls
+echo     [9] Inkling 2 Mini           Thinking Machines, MoE, 32 GB and up
 echo.
 echo      * = fits this machine best
 echo.
@@ -98,8 +99,11 @@ echo.
 echo   5 to 8 are Gemma 4, which kiln never picks on its own. Each has
 echo   an MTP head and vision, and needs llama.cpp b11059 or newer.
 echo.
+echo   9 is Inkling 2 Mini, also opt-in: vision, no MTP head, and it
+echo   needs llama.cpp b12600 or newer.
+echo.
 set "VCHOICE="
-set /p VCHOICE="Enter choice [1-8] (default=recommended): "
+set /p VCHOICE="Enter choice [1-9] (default=recommended): "
 if not defined VCHOICE (
     set "WANT=%REC_FAMILY%"
     if not defined WANT set "WANT=base"
@@ -112,6 +116,7 @@ if "!VCHOICE!"=="5" set "WANT=gemma-31b"
 if "!VCHOICE!"=="6" set "WANT=gemma-26b"
 if "!VCHOICE!"=="7" set "WANT=gemma-12b"
 if "!VCHOICE!"=="8" set "WANT=gemma-e4b"
+if "!VCHOICE!"=="9" set "WANT=inkling-mini"
 
 :have_variant
 call "%~dp0lib_variants.bat" "%WANT%"

@@ -12,6 +12,7 @@ cd /d "%~dp0..\.."
 ::    launch.bat 4b         Qwen3.8-4B distill
 ::    launch.bat gemma-26b  Gemma 4 26B-A4B (and gemma-31b,
 ::                          gemma-12b, gemma-e4b)
+::    launch.bat inkling-mini  Inkling 2 Mini
 ::
 ::  All builds use the same port, and start.bat kills any running
 ::  server before starting -- so this switches between them rather
@@ -20,6 +21,7 @@ cd /d "%~dp0..\.."
 ::
 ::  The two 27B builds share the MTP head and vision projector;
 ::  the distills have neither. Each Gemma 4 build has its own.
+::  Inkling 2 Mini has its own projector and no MTP head.
 ::
 ::  Variant definitions live in lib_variants.bat, which reads them
 ::  from scripts\hardware.py.
@@ -44,6 +46,7 @@ call :probe gemma-31b HAVE_G31
 call :probe gemma-26b HAVE_G26
 call :probe gemma-12b HAVE_G12
 call :probe gemma-e4b HAVE_GE4
+call :probe inkling-mini HAVE_INK
 
 :: The MTP head and the vision projector serve both 27B variants,
 :: so whichever you fetch first pays for them and the second is
@@ -60,6 +63,7 @@ if defined HAVE_G31  (set "S5=installed: !HAVE_G31!")  else (set "S5=not downloa
 if defined HAVE_G26  (set "S6=installed: !HAVE_G26!")  else (set "S6=not downloaded, ~10-28 GB")
 if defined HAVE_G12  (set "S7=installed: !HAVE_G12!")  else (set "S7=not downloaded, ~4-14 GB")
 if defined HAVE_GE4  (set "S8=installed: !HAVE_GE4!")  else (set "S8=not downloaded, ~4-9 GB")
+if defined HAVE_INK  (set "S9=installed: !HAVE_INK!")  else (set "S9=not downloaded, ~18-29 GB")
 
 set "M1= " & set "M2= " & set "M3= " & set "M4= "
 if "%REC_FAMILY%"=="base"  set "M1=*"
@@ -118,18 +122,27 @@ echo        %S8%
 echo        small and quick, but weak at tool calls
 echo        Cursor model name: gemma-4-e4b
 echo.
+echo     Inkling 2 Mini -- Thinking Machines' open model, new on
+echo     2026-11-20. Also never picked on its own; it has vision, no
+echo     MTP head, and needs llama.cpp b12600 or newer.
+echo.
+echo    [9] Inkling 2 Mini
+echo        %S9%
+echo        mixture of experts, 3.4B active; 32 GB and up
+echo        Cursor model name: inkling-2-mini
+echo.
 echo    [Q] quit
 echo.
 if defined REC_FAMILY echo    * = fits this machine best
 echo.
 
-if not defined HAVE_BASE if not defined HAVE_ABL if not defined HAVE_9B if not defined HAVE_4B if not defined HAVE_G31 if not defined HAVE_G26 if not defined HAVE_G12 if not defined HAVE_GE4 (
+if not defined HAVE_BASE if not defined HAVE_ABL if not defined HAVE_9B if not defined HAVE_4B if not defined HAVE_G31 if not defined HAVE_G26 if not defined HAVE_G12 if not defined HAVE_GE4 if not defined HAVE_INK (
     echo  Nothing downloaded yet -- picking one will fetch it.
     echo.
 )
 
 set "SEL="
-set /p SEL="Enter choice [1-8, Q] (default=recommended): "
+set /p SEL="Enter choice [1-9, Q] (default=recommended): "
 if not defined SEL (
     set "PICK=%REC_FAMILY%"
     if not defined PICK set "PICK=base"
@@ -143,6 +156,7 @@ if "!SEL!"=="5" set "PICK=gemma-31b"
 if "!SEL!"=="6" set "PICK=gemma-26b"
 if "!SEL!"=="7" set "PICK=gemma-12b"
 if "!SEL!"=="8" set "PICK=gemma-e4b"
+if "!SEL!"=="9" set "PICK=inkling-mini"
 if not defined PICK (
     echo.
     echo  Not a choice. Try again.

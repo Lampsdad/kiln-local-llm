@@ -106,27 +106,28 @@ for rel in rels:
         return hits[-1] if hits else ""
 
     def cuda_pair():
-        # A 13.4 binary will not start on a driver that only speaks 13.0.
-        # 12.8 is the oldest toolkit with Blackwell (sm_120) kernels.
-        # Only accept a toolkit when the matching cudart tarball is
-        # present too; otherwise try the next version, then Vulkan.
-        prefer = "13.4" if cuda and ver(cuda) >= ver("13.4") else "12.8"
-        order = [prefer] + [v for v in ("12.8", "13.4") if v != prefer]
-        for v in order:
-            name = find(r"^llama-b\d+-bin-ubuntu-cuda-" + re.escape(v) + r"-x64\.tar\.gz$")
-            if not name:
+        # The newest CUDA build whose major version the driver speaks.
+        # A build runs on any driver of its own major version (CUDA
+        # minor version compatibility): b12600 built for 13.5 ran on a
+        # driver reporting 13.4 (RTX 5090, 2026-11-21). Under NVIDIA
+        # rules a 13.x build cannot start on a 12.x driver (not tested
+        # here), so that gets the newest 12.x build, or Vulkan when
+        # there is none. No apostrophes: this is inside a bash
+        # single-quoted string. The toolkit versions
+        # move (13.4, then 13.5), so none is named here. Only a build
+        # whose matching cudart tarball is in the release counts.
+        major = ver(cuda)[0] if ver(cuda) else 0
+        pairs = {}
+        for name in assets:
+            m = re.match(r"^llama-b\d+-bin-ubuntu-cuda-(\d+\.\d+)-x64\.tar\.gz$", name)
+            if not m or ver(m.group(1))[0] > major:
                 continue
-            cudart = find(r"^cudart-llama-b\d+-bin-ubuntu-cuda-" + re.escape(v) + r"-x64\.tar\.gz$")
+            cudart = find(r"^cudart-llama-b\d+-bin-ubuntu-cuda-" + re.escape(m.group(1)) + r"-x64\.tar\.gz$")
             if cudart:
-                return name, cudart
-        name = find(r"^llama-b\d+-bin-ubuntu-cuda-[\d.]+-x64\.tar\.gz$")
-        if not name:
+                pairs[ver(m.group(1))] = (name, cudart)
+        if not pairs:
             return "", ""
-        m = re.search(r"cuda-([\d.]+)-x64", name)
-        cudart = find(r"^cudart-llama-b\d+-bin-ubuntu-cuda-" + re.escape(m.group(1)) + r"-x64\.tar\.gz$") if m else ""
-        if not cudart:
-            return "", ""
-        return name, cudart
+        return pairs[max(pairs)]
 
     kind, bin_name, cudart_name = "", "", ""
     if mode == "macos":

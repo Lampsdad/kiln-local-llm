@@ -105,6 +105,19 @@ class Setups(unittest.TestCase):
         new["llama"]["build"] = "11624"
         self.assertIn("gemma-12b", [s.variant for s in bench.setups(new)])
 
+    def test_inkling_needs_its_build_and_has_no_head_to_drop(self):
+        ink = dict(model("inkling-mini", quant="IQ4_NL", head=False,
+                         ctx=262144), min_build=12600)
+        old = status([model("base"), ink])
+        old["llama"]["build"] = "11669"
+        self.assertNotIn("inkling-mini",
+                         [s.variant for s in bench.setups(old)])
+        new = status([model("base"), ink])
+        new["llama"]["build"] = "12600"
+        found = [s for s in bench.setups(new) if s.variant == "inkling-mini"]
+        self.assertEqual([(s.id, s.args) for s in found],
+                         [("inkling-mini", ["start", "inkling-mini"])])
+
 
 class Lines(unittest.TestCase):
     """Qwen or Gemma is a choice about the model, like abliterated: the
@@ -138,6 +151,7 @@ class Lines(unittest.TestCase):
         self.assertEqual(bench.runs_line(st, "gemma-26b"), "gemma")
         bench.load = lambda: {"chosen": {"variant": "gemma-31b"}}
         self.assertEqual(bench.runs_line(st), "gemma")
+        self.assertEqual(bench.runs_line(st, "inkling-mini"), "inkling")
 
     def test_pick_stays_on_your_line(self):
         results = [result("base", 85.0, 114688),

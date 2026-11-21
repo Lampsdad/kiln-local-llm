@@ -310,7 +310,7 @@ class MtpProbe(Sandbox):
             with self.subTest(f):
                 self.assertNotIn("--help 2>&1 | grep", text)
 
-    def probe(self, help_text):
+    def probe(self, help_text, ngram=""):
         with open(os.path.join(self.tmp, "help.txt"), "w") as fh:
             fh.write(help_text)
         binary = self.script("bin", 'cat "%s"' % os.path.join(self.tmp, "help.txt"))
@@ -318,7 +318,8 @@ class MtpProbe(Sandbox):
         open(os.path.join(self.tmp, "models", "mtp.gguf"), "w").close()
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp,
                "V_PREFIX": "model", "V_ID": "base", "V_LABEL": "test",
-               "V_QUANTS": "", "V_MTP_FILES": "mtp.gguf", "V_MMPROJ_FILES": ""}
+               "V_QUANTS": "", "V_MTP_FILES": "" if ngram else "mtp.gguf",
+               "V_MMPROJ_FILES": "", "V_NGRAM": ngram}
         cmd = 'set -euo pipefail; . "$1"; kiln_model_args "$2"; printf "%s\\n" "${EXTRA[*]}"'
         return subprocess.run(["bash", "-c", cmd, "-", SELECT, binary], cwd=self.tmp,
                               env=env, capture_output=True, text=True, timeout=60)
@@ -338,6 +339,44 @@ class MtpProbe(Sandbox):
         r = self.probe("usage: llama-server [options]\n" + "  --flag  padding\n" * 4000)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("MTP speculative decoding: unavailable", r.stdout)
+
+    def test_a_family_without_a_head_gets_ngram(self):
+        r = self.probe("usage: llama-server [options]\n"
+                       "  --spec-type none,draft-mtp,ngram-simple,ngram-mod\n"
+                       + "  --flag  padding\n" * 4000, ngram="ngram-mod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("N-gram speculative decoding: enabled (ngram-mod)", r.stdout)
+        self.assertIn("--spec-type ngram-mod", r.stdout)
+        self.assertNotIn("draft-mtp --spec-draft-model", r.stdout)
+
+    def test_a_build_without_ngram_goes_without(self):
+        r = self.probe("usage: llama-server [options]\n  --spec-type none,draft-mtp\n",
+                       ngram="ngram-mod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("N-gram speculative decoding: unavailable", r.stdout)
+        self.assertNotIn("--spec-type", r.stdout.splitlines()[-1])
+
+    def test_missing_weights_name_a_quant_the_family_has(self):
+        # Inkling has no UD-Q5_K_XL, so the "not found" path must not
+        # name one.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp,
+               "V_PREFIX": "Inkling-2-Mini", "V_ID": "inkling-mini", "V_LABEL": "test",
+               "V_QUANTS": "Q8_0 IQ4_NL", "V_MTP_FILES": "", "V_MMPROJ_FILES": ""}
+        r = subprocess.run(["bash", "-c", 'set -euo pipefail; . "$1"; printf "%s\\n" "$MODEL"',
+                            "-", SELECT], cwd=self.tmp, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[-1], "./models/Inkling-2-Mini-IQ4_NL.gguf")
+
+    def test_slurm_passes_one_ubatch(self):
+        # llama.cpp warns when --ubatch-size comes twice, and lib_select.sh
+        # adds the family's own (Inkling: 256).
+        with open(os.path.join(ROOT, "scripts", "unix", "slurm-llama.sh"), encoding="utf-8") as fh:
+            text = fh.read()
+        code = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
+        self.assertEqual(sum(l.count("--ubatch-size") for l in code), 1)
+        self.assertIn("UBATCH_ARGS=(--ubatch-size 1024)", text)
+        self.assertIn('if [ -n "${V_UBATCH:-}" ]; then', text)
 
 
 if __name__ == "__main__":

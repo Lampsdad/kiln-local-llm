@@ -237,7 +237,10 @@ def model_rows(vram, rec_family):
             if files[1]:
                 ctx_no_mtp = opencode.planned_ctx(
                     fam_id, (files[0], "", files[2]), vram)
-        plan = hardware.plan_for(vram, fam_id) if vram else None
+        # What `kiln get <family>` would fetch: recommend() with the
+        # family named, which falls back to a short window or a low-bit
+        # quant (and flags it) before it gives up.
+        plan = hardware.recommend(vram, family=fam_id) if vram else None
         get = None
         if plan:
             # The shared MTP head and projector are skipped when the
@@ -250,7 +253,9 @@ def model_rows(vram, rec_family):
                 proj = fam["mmproj"][plan["mmproj"]]
                 extra += 0 if _exists(proj.local) else proj.bytes
             get = {"quant": plan["quant"], "ctx": plan["ctx"],
-                   "gb": round((plan["quant_bytes"] + extra) / 1e9, 1)}
+                   "gb": round((plan["quant_bytes"] + extra) / 1e9, 1),
+                   "below_min": bool(plan.get("below_min")),
+                   "below_quality": bool(plan.get("below_quality"))}
         rows.append({
             "id": fam_id, "label": fam["label"], "alias": fam["alias"],
             "params": fam["params"], "uncensored": fam["uncensored"],
