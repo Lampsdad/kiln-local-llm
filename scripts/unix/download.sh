@@ -91,6 +91,14 @@ if [ -z "$QUANT" ]; then
         9b|4b) QUANT="Q5_K_M" ;;
         *)     QUANT="UD-Q5_K_XL" ;;
     esac
+    # A family without that quant (Inkling: Q8_0 and IQ4_NL) takes its
+    # smallest, the one most likely to fit whatever it runs on.
+    if [ -n "$V_QUANTS" ]; then
+        case " $V_QUANTS " in
+            *" $QUANT "*) ;;
+            *) QUANT="${V_QUANTS##* }" ;;
+        esac
+    fi
     echo "NOTE: could not size this GPU; defaulting to ${QUANT}."
     echo "      Set QUANT=... if that is not what you want."
 fi

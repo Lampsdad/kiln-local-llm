@@ -766,9 +766,9 @@ echo  %C_HL%Variants:%C_0%
 echo   %C_AC%base ablit 9b 4b%C_0%        Qwen3.8: 27B, 27B abliterated, 9B and 4B
 echo                           distills. kiln picks from these for you.
 echo   %C_AC%gemma-31b gemma-26b%C_0%     Gemma 4: 31B dense, 26B-A4B MoE, 12B and
-echo   %C_AC%gemma-12b gemma-e4b%C_0%     E4B. Only when named. Needs llama.cpp b11059+.
+echo   %C_AC%gemma-12b gemma-e4b%C_0%     E4B. Opt-in. Needs llama.cpp b11059+.
 echo   %C_AC%inkling-mini%C_0%            Inkling 2 Mini: 26B MoE, 3.4B active, 32 GB
-echo                           and up. Only when named. Needs llama.cpp b12600+.
+echo                           and up. Opt-in. Needs llama.cpp b12600+.
 echo.
 echo  %C_MU%With no command, kiln opens the TUI.%C_0%
 echo  %C_MU%kiln status prints the status board.%C_0%

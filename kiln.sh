@@ -95,7 +95,8 @@ PY="$KILN_PY"
 . "$UNIX/lib_server.sh"
 
 # Every family the registry knows. Qwen3.8 is what kiln picks for
-# you; Gemma 4 and Inkling 2 Mini run only when named.
+# you; Gemma 4 and Inkling 2 Mini run when named, or when one of them
+# is all that is on disk.
 VARIANTS="base, ablit, 9b, 4b, gemma-31b, gemma-26b, gemma-12b, gemma-e4b, inkling-mini"
 
 # A family id hardware.py knows. The Qwen ids pass without Python
@@ -351,9 +352,9 @@ usage() {
    base ablit 9b 4b       Qwen3.8: 27B, 27B abliterated, 9B and 4B
                           distills. kiln picks from these for you.
    gemma-31b gemma-26b    Gemma 4: 31B dense, 26B-A4B MoE, 12B and
-   gemma-12b gemma-e4b    E4B. Only when named. Needs llama.cpp b11059+.
+   gemma-12b gemma-e4b    E4B. Opt-in. Needs llama.cpp b11059+.
    inkling-mini           Inkling 2 Mini: 26B MoE, 3.4B active, 32 GB
-                          and up. Only when named. Needs llama.cpp b12600+.
+                          and up. Opt-in. Needs llama.cpp b12600+.
 
 USAGE
 }

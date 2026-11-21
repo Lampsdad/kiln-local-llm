@@ -450,5 +450,32 @@ class Serialising(unittest.TestCase):
         self.assertFalse(os.path.exists(other.log_path))
 
 
+
+class ModelRows(unittest.TestCase):
+    """The TUI's per-model row says what `kiln get <family>` would fetch."""
+
+    def rows(self, vram):
+        with mock.patch.object(control.opencode, "on_disk", return_value=None), \
+                mock.patch.object(control, "_exists", return_value=False):
+            return {r["id"]: r for r in control.model_rows(vram, "base")}
+
+    def test_a_short_window_is_offered_and_flagged(self):
+        # 24 GB: kiln get inkling-mini fetches IQ4_NL for about 48K, under
+        # the bar. The row must say so, not "does not fit".
+        get = self.rows(24564)["inkling-mini"]["get"]
+        self.assertEqual(get["quant"], "IQ4_NL")
+        self.assertLess(get["ctx"], 98304)
+        self.assertTrue(get["below_min"])
+
+    def test_a_comfortable_fit_is_not_flagged(self):
+        get = self.rows(32607)["inkling-mini"]["get"]
+        self.assertEqual((get["quant"], get["ctx"]), ("IQ4_NL", 147456))
+        self.assertFalse(get["below_min"])
+        self.assertFalse(get["below_quality"])
+
+    def test_nothing_that_loads_stays_none(self):
+        self.assertIsNone(self.rows(12288)["inkling-mini"]["get"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

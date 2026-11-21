@@ -356,6 +356,18 @@ class MtpProbe(Sandbox):
         self.assertIn("N-gram speculative decoding: unavailable", r.stdout)
         self.assertNotIn("--spec-type", r.stdout.splitlines()[-1])
 
+    def test_missing_weights_name_a_quant_the_family_has(self):
+        # Inkling has no UD-Q5_K_XL, so the "not found" path must not
+        # name one.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp,
+               "V_PREFIX": "Inkling-2-Mini", "V_ID": "inkling-mini", "V_LABEL": "test",
+               "V_QUANTS": "Q8_0 IQ4_NL", "V_MTP_FILES": "", "V_MMPROJ_FILES": ""}
+        r = subprocess.run(["bash", "-c", 'set -euo pipefail; . "$1"; printf "%s\\n" "$MODEL"',
+                            "-", SELECT], cwd=self.tmp, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[-1], "./models/Inkling-2-Mini-IQ4_NL.gguf")
+
     def test_slurm_passes_one_ubatch(self):
         # llama.cpp warns when --ubatch-size comes twice, and lib_select.sh
         # adds the family's own (Inkling: 256).

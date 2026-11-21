@@ -66,6 +66,13 @@ else
             9b|4b) QUANT="Q5_K_M" ;;
             *)     QUANT="UD-Q5_K_XL" ;;
         esac
+        # Or the family's smallest, when it has no such quant (Inkling).
+        if [ -n "${V_QUANTS}" ]; then
+            case " ${V_QUANTS} " in
+                *" $QUANT "*) ;;
+                *) QUANT="${V_QUANTS##* }" ;;
+            esac
+        fi
         MODEL="./models/${V_PREFIX}-${QUANT}.gguf"
     fi
 fi

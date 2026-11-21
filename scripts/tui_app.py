@@ -943,6 +943,11 @@ class KilnApp(App):
                 notes.append("text only")
             if m["quant"] and control.too_old(s["llama"], m):
                 notes.append("needs llama.cpp b%d+" % m["min_build"])
+            if not m["quant"] and m["get"]:
+                if m["get"].get("below_min"):
+                    notes.append("short window")
+                if m["get"].get("below_quality"):
+                    notes.append("low-bit quant")
             if m["recommended"]:
                 notes.append("best fit")
             cells = (" ".join(marks), m["label"], disk, ctx, ", ".join(notes))
@@ -1243,6 +1248,11 @@ class KilnApp(App):
         if m and m["get"]:
             body = "%s, about %s GB, opening %s of context on this GPU." % (
                 m["get"]["quant"], m["get"]["gb"], kctx(m["get"]["ctx"]))
+            if m["get"].get("below_min"):
+                body += (" That is less than agentic coding wants; a smaller"
+                         " model would open a larger window.")
+            if m["get"].get("below_quality"):
+                body += " It is a low-bit quant, so expect weaker output."
         elif m and self.status["machine"]["vram_mib"]:
             body = "kiln does not expect it to fit this GPU."
         else:

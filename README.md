@@ -500,8 +500,9 @@ what the tuning numbers below were measured on.
 
 Google's [Gemma 4](https://huggingface.co/collections/google/gemma-4)
 is wired up as a second model line. **kiln never picks it for you.**
-`kiln hardware`, a bare `kiln get` and a bare `kiln start` all stay on
-Qwen3.8. Gemma runs when you name it:
+`kiln hardware` and a bare `kiln get` stay on Qwen3.8, and so does a
+bare `kiln start` while any Qwen3.8 build is on disk; with only Gemma
+downloaded, that is what it runs. Otherwise Gemma runs when you name it:
 
 ```bat
 kiln get gemma-26b        :: sized to this GPU, like any other build
@@ -581,8 +582,9 @@ back as proper tool calls.
 Thinking Machines' [Inkling 2 Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini)
 (Apache-2.0, released 2026-11-20) is a third opt-in line. It is a
 26B mixture of experts with 3.4B parameters active per token, and it
-takes images. Like Gemma, **kiln never picks it for you**. It runs
-when you name it:
+takes images. Like Gemma, **kiln never picks it for you**: a bare `kiln
+get` never fetches it, and a bare `kiln start` runs it only when it is
+the only model on disk. Otherwise it runs when you name it:
 
 ```bat
 kiln get inkling-mini     :: sized to this GPU, like any other build

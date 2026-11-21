@@ -39,6 +39,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (tested on the 5090 on both), 12.8 on Linux or 12.4 on Windows for a
   12.x driver. So Linux setup with any 13.x driver now installs the
   13.5 build, not 12.8; the 5090 ran it at the same speed.
+- **`kiln tui` lists what `kiln get` would fetch on a tight card.** A
+  model that loads only with less than the 96K window, or only at a
+  low-bit quant, showed as "does not fit", while `kiln get` would still
+  fetch it with a warning. The row now shows that plan, marked "short
+  window" or "low-bit quant".
 - **`slurm-llama.sh` passes `--ubatch-size` once.** It added its own
   1024 next to a family's pinned one, which llama.cpp b12600 warns
   about.
