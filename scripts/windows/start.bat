@@ -146,6 +146,16 @@ if defined MTP (
     )
 )
 
+:: ---- n-gram speculation, for a family with no MTP head ----
+:: Inkling 2 Mini: ngram-mod drafts from text already in the context
+:: and needs no model. Probed like MTP, so a build without it just
+:: goes without.
+set USE_NGRAM=0
+if "%USE_MTP%"=="0" if defined V_NGRAM (
+    "%BINARY%" --help 2>&1 | findstr /C:"%V_NGRAM%" >nul
+    if not errorlevel 1 set USE_NGRAM=1
+)
+
 :: ---- vision ----
 set USE_VISION=0
 if defined MMPROJ set USE_VISION=1
@@ -242,6 +252,8 @@ echo   context : %CTX%  ^(sized to %VRAM_MIB% MiB VRAM^)
 if defined TIER_LABEL echo   hardware: %TIER_LABEL%
 echo   threads : %CORES%  ^(physical cores^)
 if "%USE_MTP%"=="1"    (echo   MTP     : enabled  ^(%MTP%^)) else (echo   MTP     : disabled)
+if "%USE_NGRAM%"=="1"  echo   n-gram  : enabled  ^(%V_NGRAM%^)
+if defined V_EFFORT    echo   effort  : %V_EFFORT%  ^(a request can ask for another^)
 if "%USE_VISION%"=="1" (echo   vision  : enabled) else (echo   vision  : disabled)
 echo   alias   : %ALIAS%
 echo ============================================================
@@ -296,6 +308,8 @@ del "%CF_LOG%" >nul 2>&1
 ::                     wants the whole window in one slot.
 ::  -b 4096 -ub 1024   larger prefill batches; the 5090 has bandwidth
 ::                     and VRAM headroom to spare at these sizes.
+::                     A family can pin its own ubatch (Inkling 2 Mini:
+::                     256), since hardware.py sized its context for it.
 ::  -t %CORES%         physical cores only, detected at launch. With
 ::                     everything on GPU the CPU just feeds batches, so
 ::                     counting SMT siblings only adds contention.
@@ -303,12 +317,17 @@ del "%CF_LOG%" >nul 2>&1
 ::  --reasoning-format deepseek
 ::                     puts chain-of-thought in message.reasoning_content
 ::                     so thinking tokens do not land in code output.
+::  --spec-type %V_NGRAM%
+::                     model-free speculation for a family with no
+::                     MTP head (Inkling 2 Mini: ngram-mod).
 ::  --spec-draft-n-max per family: 3 for Qwen, the llama.cpp default
 ::                     and what the released head was trained for; 4
 ::                     for Gemma 4, the setting unsloth measured.
 ::  sampling           each family's published values.
 ::  --reasoning        set where the template does not think by
 ::                     default (Gemma 4); Qwen's already does.
+::  --reasoning-effort the template's default thinking level, where
+::                     kiln picks one (Inkling 2 Mini: medium).
 :: ------------------------------------------------------------
 
 set ARGS=--model "%MODEL%"
@@ -319,13 +338,16 @@ set ARGS=%ARGS% --cache-type-k q8_0
 set ARGS=%ARGS% --cache-type-v q8_0
 set ARGS=%ARGS% --parallel 1
 set ARGS=%ARGS% --batch-size 4096
-set ARGS=%ARGS% --ubatch-size 1024
+set "UBATCH=1024"
+if defined V_UBATCH set "UBATCH=%V_UBATCH%"
+set ARGS=%ARGS% --ubatch-size %UBATCH%
 set ARGS=%ARGS% --threads %CORES%
 set ARGS=%ARGS% --jinja
 set ARGS=%ARGS% --reasoning-format deepseek
 if not defined V_SAMPLING set "V_SAMPLING=--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0"
 set ARGS=%ARGS% %V_SAMPLING%
 if defined V_REASONING set ARGS=%ARGS% --reasoning %V_REASONING%
+if defined V_EFFORT set ARGS=%ARGS% --reasoning-effort %V_EFFORT%
 set ARGS=%ARGS% --port %PORT% --host 0.0.0.0
 set ARGS=%ARGS% --alias "%ALIAS%"
 set ARGS=%ARGS% --api-key-file "api_key.txt"
@@ -336,6 +358,7 @@ if "%USE_MTP%"=="1" (
     set ARGS=!ARGS! --spec-draft-ngl 99
     set ARGS=!ARGS! --spec-draft-n-max %V_SPEC_N%
 )
+if "%USE_NGRAM%"=="1" set ARGS=%ARGS% --spec-type %V_NGRAM%
 if "%USE_VISION%"=="1" (
     set ARGS=!ARGS! --mmproj "%MMPROJ%"
 )

@@ -7,7 +7,7 @@
 # Sets: V_ID V_LABEL V_REPO V_PREFIX V_ALIAS V_UNCENSORED
 #       V_THIRD_PARTY V_MTP V_VISION V_PARAMS V_QUANTS
 #       V_MTP_FILES V_MMPROJ_FILES V_SPEC_N V_SAMPLING V_REASONING
-#       V_MIN_BUILD
+#       V_MIN_BUILD V_UBATCH V_NGRAM V_EFFORT
 #
 # The registry itself lives in scripts/hardware.py, which is also
 # what sizes the launch -- one file knows what a variant IS, so
@@ -17,7 +17,7 @@
 # The base/ablit fallback below exists for one case: Python missing
 # on a machine that already has the weights (someone copied the GGUFs
 # in by hand). It covers the two original 27B variants only -- every
-# other family (9b, 4b, Gemma 4) is Python-path only, because you
+# other family (9b, 4b, Gemma 4, Inkling) is Python-path only, because you
 # cannot have downloaded it without Python in the first place.
 
 _kiln_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -77,7 +77,7 @@ V_ID=""; V_LABEL=""; V_REPO=""; V_PREFIX=""; V_ALIAS=""
 V_UNCENSORED=0; V_THIRD_PARTY=0; V_MTP=0; V_VISION=0
 V_PARAMS=""; V_QUANTS=""
 V_MTP_FILES=""; V_MMPROJ_FILES=""; V_SPEC_N=3; V_SAMPLING=""
-V_REASONING=""; V_MIN_BUILD=0
+V_REASONING=""; V_MIN_BUILD=0; V_UBATCH=""; V_NGRAM=""; V_EFFORT=""
 
 if [ -n "$_kiln_py" ] && [ -f "$_kiln_root/scripts/hardware.py" ]; then
     # Read only the keys we expect. The output is ours, but parsing
@@ -102,6 +102,9 @@ if [ -n "$_kiln_py" ] && [ -f "$_kiln_root/scripts/hardware.py" ]; then
             V_SAMPLING)    V_SAMPLING="$_v" ;;
             V_REASONING)   V_REASONING="$_v" ;;
             V_MIN_BUILD)   V_MIN_BUILD="$_v" ;;
+            V_UBATCH)      V_UBATCH="$_v" ;;
+            V_NGRAM)       V_NGRAM="$_v" ;;
+            V_EFFORT)      V_EFFORT="$_v" ;;
         esac
     done < <("$_kiln_py" "$_kiln_root/scripts/hardware.py" \
                  --variant "${VARIANT:-base}" 2>/dev/null | kiln_strip_cr)
@@ -133,7 +136,7 @@ if [ -z "$V_ID" ]; then
         *)
             echo "ERROR: unknown VARIANT '${VARIANT}'." >&2
             echo "       Use base, ablit, 9b, 4b, gemma-31b, gemma-26b," >&2
-            echo "       gemma-12b or gemma-e4b." >&2
+            echo "       gemma-12b, gemma-e4b or inkling-mini." >&2
             echo "       (All but base and ablit need python3 on PATH.)" >&2
             exit 1
             ;;

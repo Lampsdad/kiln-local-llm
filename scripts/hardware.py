@@ -42,16 +42,17 @@ All three numbers are read off the published config.json, not guessed:
 num_hidden_layers / full_attention_interval gives the full-attention
 count, and num_key_value_heads x head_dim gives the per-layer width.
 
-Gemma 4 gets the same treatment with sliding-window layers in place of
-the linear ones: only its global layers grow with context, and the
-sliding-window cache is a fixed cost like the recurrent state. The
-numbers are worked through above its registry entries.
+Gemma 4 and Inkling 2 Mini get the same treatment with sliding-window
+layers in place of the linear ones: only their global layers grow with
+context, and the sliding-window cache is a fixed cost like the
+recurrent state. The numbers are worked through above their registry
+entries.
 
 Usage:
     hardware.py --detect                 what is in this machine
     hardware.py --recommend              what to download and run on it
     hardware.py --size-model PATH [...]  context for a file already on disk
-    hardware.py --table [gemma]          the README matrix
+    hardware.py --table [gemma|inkling]  the README matrix
 """
 
 import argparse
@@ -469,6 +470,137 @@ MODELS.update({
                        98653248, 990372672))),
 })
 
+# --- Inkling 2 Mini: opt-in --------------------------------------
+#
+# Thinking Machines' open model (Apache-2.0, released 2026-11-20): a
+# 26.4B mixture of experts with 3.4B active, 8 of 128 experts per
+# token, and a vision tower. Opt-in like Gemma: in no FAMILY_ORDER,
+# so it runs when named: kiln start inkling-mini.
+#
+# From ggml-org's repo, not unsloth's. unsloth's UD quants are written
+# in the layout of unsloth's own llama.cpp fork (their GGUFs say
+# general.architecture = inkling2), which upstream does not load;
+# upstream merged its own layout, inkling2_loop, in #32694. Every
+# llama.cpp kiln installs comes from ggml-org, so these are the files
+# it can serve. ggml-org publishes Q8_0, an imatrix IQ4_NL and a BF16
+# upcast of the NVFP4/MXFP8 checkpoint; the BF16 (52 GB) is left out,
+# as Q8_0 is already near-lossless (KLD 0.003 against it).
+#
+# It is a looped transformer: of its 24 layers, 6-17 run three times
+# per token, 48 layer evaluations in all, and each pass keeps its own
+# KV cache. Five of every six layers are sliding-window (1,024
+# tokens), so as with Gemma only the global ones grow with context:
+# layers 5 and 23 once, 11 and 17 three times each, 8 in all.
+#
+#   kv_bytes = 8 global x 8 KV heads x 128 head-dim x 2 (K+V) x 34/32
+#            = 17,408
+#
+# No flash-attention scratch is counted, unlike Gemma: on CUDA the
+# compute buffer grew by 198 B x ubatch a token (below) and by nothing
+# else.
+#
+#   state_mib = 40 sliding x 8 x 128 x 2 x (1024 + 1024) x 34/32
+#             = 170 MiB, plus the short-conv cache (48 x 3 x 2304 x
+#             4 B, about 1 MiB), rounded up to 176
+#
+# Most of the cost is neither of those. The model has no RoPE: a
+# learned relative-position bias carries the positions, and llama.cpp
+# builds it in full for every global layer, n_kv x ubatch x 24 heads
+# in f32, twice over (the gather and its permuted copy). That is a
+# compute buffer that grows with context AND with ubatch:
+#
+#   ubatch_ctx_bytes = 200 per token of context per ubatch row
+#
+# At ubatch 1024, which start.bat uses for everything else, that is
+# 200 KB a token, and 256K of context would need 50 GB for it alone.
+# So Inkling pins its own ubatch, and the start scripts pass it.
+#
+# Which ubatch: the largest that keeps a 32 GB card well over MIN_CTX.
+# On the 5090 at b12600, prefill of a 32K prompt ran 1,027 t/s at
+# ubatch 256, 1,178 at 384 and 1,272 at 512 (1,192 / 1,548 / 1,623 at
+# 16K for 256 / 512 / 1024); generation held at 71-74 t/s throughout.
+# 512 leaves 80K, under the bar; 384 leaves 104K; 256 leaves 144K, a
+# fifth slower to prefill than 512 for 40K more room than 384.
+#
+# KV and the SWA cache were read off the GGUF header
+# (sliding_window_pattern, head_count_kv, key_length,
+# loop.start/end/count), then measured on the 5090 at b12600 (CUDA
+# 12.8) by loading IQ4_NL at 32K-128K and ubatch 128-512 and reading
+# llama.cpp's buffers. KV took exactly 17,408 B a token and the SWA
+# cache 113-134 MiB. The compute buffer took 198 B per context token
+# per ubatch row, with under 200 MiB that does not grow with context,
+# which COMPUTE_BUF_MIB covers. The CPU build measured 199.5. Weights
+# on the GPU came to 16,330 MiB of the file's 16,811, and nvidia-smi
+# showed 350-600 MiB more than llama.cpp's own total, which
+# DRIVER_RESERVE covers. Only IQ4_NL was loaded; Q8_0 is arithmetic.
+#
+# No draft head. unsloth ships a DSpark drafter for its own files and
+# fork, and ggml-org ships none.
+#
+# ngram: llama.cpp's ngram-mod speculation instead, which drafts from
+# text already in the context and needs no model. Generation here is
+# a fixed ~13 ms a step, not memory bandwidth (4.1 GB a token read at
+# 77 t/s is 334 of the 5090's 1,792 GB/s), so checking a draft is
+# cheap: 4 tokens cost 19 ms and 8 cost 22 ms. On a rewrite-this-code
+# prompt the answer ran at 100-110 t/s instead of 74. From-scratch
+# code drafted little and ran ~5% slower; prose, arithmetic and a
+# question about a long file drafted nothing and came out
+# byte-identical (b12600, 2026-11-21).
+#
+# Sampling: the checkpoint's generation_config.json sets temperature
+# 1.0 and nothing else, i.e. no truncation, which is what unsloth
+# recommends: top-p 1.0 and top-k 0 (off). The template thinks by
+# default (reasoning_effort "high"), so --reasoning is left alone.
+#
+# effort: --reasoning-effort medium. On a coding prompt "high" thought
+# 7,800-9,100 tokens (2-2.5 minutes) and "medium" 1,700-2,200 (40-50
+# s). Of two answers each, both "high" passed 24 shared checks and one
+# "medium" did; the other accepted the malformed "P3DT". A request's
+# own reasoning_effort still wins (checked with /apply-template).
+#
+# min_build: #32694 is b12600.
+INKLING_SAMPLING = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0"
+INKLING_REPO = "ggml-org/Inkling-2-Mini-GGUF"
+
+MODELS.update({
+    "inkling-mini": {
+        "group": "inkling",
+        "label": "Inkling 2 Mini",
+        "repo": INKLING_REPO,
+        "prefix": "Inkling-2-Mini",
+        "alias": "inkling-2-mini",
+        "params": "26B-A3B",
+        "uncensored": False,
+        "kv_bytes": 17408,
+        "ubatch": 256,
+        "ubatch_ctx_bytes": 200,
+        "state_mib": 176,
+        "max_ctx": 262144,
+        "draft_mib": 0,
+        "draft_ctx_bytes": 0,
+        "spec_n_max": 3,
+        "ngram": "ngram-mod",
+        "effort": "medium",
+        "sampling": INKLING_SAMPLING,
+        "reasoning": "",
+        "min_build": 12600,
+        "mtp_heads": {},
+        # Already named for the model, so nothing collides.
+        "mmproj": {
+            "bf16": _extra(INKLING_REPO, "mmproj-Inkling-2-Mini-BF16.gguf",
+                           641805984),
+            "q8_0": _extra(INKLING_REPO, "mmproj-Inkling-2-Mini-Q8_0.gguf",
+                           345910944),
+        },
+        "quants": [
+            ("Q8_0",   27820099264),
+            # 4-bit experts in layers 0-19, everything else Q8_0.
+            ("IQ4_NL", 17627940768),
+        ],
+        "min_quality": 1,       # IQ4_NL; both are usable
+    },
+})
+
 # Derived rather than written down twice: a family has MTP or vision
 # exactly when it lists a head or a projector to load.
 for _fam in MODELS.values():
@@ -484,14 +616,17 @@ FAMILY_ORDER = ["base", "9b", "4b"]
 # can, rather than a jump to a different model line. E4B is left out
 # on purpose; see its entry.
 GEMMA_ORDER = ["gemma-31b", "gemma-26b", "gemma-12b"]
-SIBLINGS = {"qwen": FAMILY_ORDER, "gemma": GEMMA_ORDER}
+INKLING_ORDER = ["inkling-mini"]
+SIBLINGS = {"qwen": FAMILY_ORDER, "gemma": GEMMA_ORDER,
+            "inkling": INKLING_ORDER}
 
 # The family `kiln start` runs when none is named and several are on
 # disk: best first, so it is the one you would have picked by hand.
-# Qwen first: Gemma is opt-in, so it runs on its own only when it is
-# all there is.
+# Qwen first: Gemma and Inkling are opt-in, so each runs on its own
+# only when it is all there is.
 DISK_ORDER = ["base", "ablit", "9b", "4b",
-              "gemma-31b", "gemma-26b", "gemma-12b", "gemma-e4b"]
+              "gemma-31b", "gemma-26b", "gemma-12b", "gemma-e4b",
+              "inkling-mini"]
 
 # Named consumer tiers. Purely cosmetic -- nothing branches on the
 # name, it just gives the user something to match against the README
@@ -675,10 +810,18 @@ def context_for(vram_mib, weights_mib, kv_bytes, state_mib,
     return min(ctx, max_ctx)
 
 
+def ctx_bytes(fam):
+    """What one token of context costs a family: its KV cache, plus
+    whatever its compute buffer grows by per token at the ubatch it
+    launches with. Only Inkling has the second; see its entry."""
+    return fam["kv_bytes"] + (fam.get("ubatch") or 0) * fam.get(
+        "ubatch_ctx_bytes", 0)
+
+
 def fam_context(fam, vram_mib, weights_mib, mtp_mib=0, mmproj_mib=0,
                 max_ctx=None):
     """context_for with a family's own per-token and fixed costs."""
-    return context_for(vram_mib, weights_mib, fam["kv_bytes"],
+    return context_for(vram_mib, weights_mib, ctx_bytes(fam),
                        fam["state_mib"], mtp_mib, mmproj_mib,
                        min(fam["max_ctx"], max_ctx or fam["max_ctx"]),
                        fam["draft_mib"], fam["draft_ctx_bytes"])
@@ -729,7 +872,7 @@ def _score(fam, quant_idx, mtp_id, mmproj_id, ctx):
         1 if mtp_id else 0,
         n - quant_idx,
         {"q8_0": 2, "q4_0": 1}.get(mtp_id, 0),
-        {"f16": 2, "q8_0": 1}.get(mmproj_id, 0),
+        {"f16": 2, "bf16": 2, "q8_0": 1}.get(mmproj_id, 0),
         ctx,
     )
 
@@ -971,7 +1114,7 @@ def cmd_size_model(args):
         ("CTX", ctx),
         ("WEIGHTS_MIB", weights),
         ("FAMILY", fam_id),
-        ("KV_BYTES", fam["kv_bytes"]),
+        ("KV_BYTES", ctx_bytes(fam)),
         ("TIER", tid),
         ("TIER_LABEL", tlabel),
     ]
@@ -1051,6 +1194,14 @@ def cmd_variant(args):
         ("V_SAMPLING", fam["sampling"]),
         ("V_REASONING", fam["reasoning"]),
         ("V_MIN_BUILD", fam["min_build"]),
+        # --ubatch-size, or empty for the start script's own.
+        ("V_UBATCH", fam.get("ubatch") or ""),
+        # --spec-type for model-free speculation when there is no MTP
+        # head, or empty.
+        ("V_NGRAM", fam.get("ngram", "")),
+        # --reasoning-effort, the chat template's default level, or
+        # empty to leave the template's own.
+        ("V_EFFORT", fam.get("effort", "")),
     ])
     return 0
 
@@ -1142,9 +1293,11 @@ def _fmt_ctx(ctx):
 def cmd_table(args):
     """The README matrix, generated from the same arithmetic the
     launcher uses -- so the docs cannot drift from the code.
-    --table gemma prints the Gemma 4 section instead."""
+    --table gemma and --table inkling print those sections instead."""
     if args.table == "gemma":
         return _gemma_table()
+    if args.table == "inkling":
+        return _line_table(INKLING_ORDER, "Inkling 2 Mini")
     _matrices(FAMILY_ORDER)
 
     # The matrix above fixes the MTP head at q8_0 and vision at f16.
@@ -1179,19 +1332,33 @@ def _gemma_table():
     _matrices(GEMMA_ORDER + ["gemma-e4b"])
     # Only the families a Gemma user is ever pointed at: E4B is left
     # out here as it is from SIBLINGS.
-    print("\n**What each card runs, if you ask for Gemma 4**\n")
+    return _line_table(GEMMA_ORDER, "Gemma 4", matrices=False)
+
+
+def _line_table(order, name, matrices=True):
+    """An opt-in line's per-quant matrices, then what each card runs
+    if you ask for that line."""
+    if matrices:
+        _matrices(order)
+    print("\n**What each card runs, if you ask for %s**\n" % name)
     print("| Card | Model | Quant | MTP | Vision | Context |")
     print("|---|---|---|---|---|---|")
     for vram, label in TABLE_CARDS:
-        plan = next((p for p in (plan_for(vram, f) for f in GEMMA_ORDER)
+        plan = next((p for p in (plan_for(vram, f) for f in order)
                      if p), None)
+        # Loads, but not with the window Cursor needs: say how short.
+        short = None if plan else _roomiest(vram, order)
+        if short:
+            plan = short
         if not plan:
             print("| %s | — | — | — | — | does not fit |" % label)
             continue
+        ctx = _fmt_ctx(plan["ctx"])
+        if short:
+            ctx += ", under the %dK bar" % (MIN_CTX // 1024)
         print("| %s | %s | `%s` | %s | %s | %s |" % (
             label, MODELS[plan["family"]]["label"], plan["quant"],
-            plan["mtp"] or "off", plan["mmproj"] or "off",
-            _fmt_ctx(plan["ctx"])))
+            plan["mtp"] or "off", plan["mmproj"] or "off", ctx))
     return 0
 
 
@@ -1200,7 +1367,7 @@ def _matrices(fam_ids):
     fmt = _fmt_ctx
     for fam_id in fam_ids:
         fam = MODELS[fam_id]
-        # The best head and projector: q8_0 and f16 in every family.
+        # The best head and projector: listed first in every family.
         mtp = next(iter(fam["mtp_heads"].items()), None)
         mm = next(iter(fam["mmproj"].items()), None)
         extra = []
@@ -1237,8 +1404,9 @@ def main():
     g.add_argument("--recommend", action="store_true")
     g.add_argument("--size-model", metavar="PATH")
     g.add_argument("--table", nargs="?", const="qwen",
-                   choices=["qwen", "gemma"],
-                   help="the README matrix; gemma for the Gemma 4 one")
+                   choices=["qwen", "gemma", "inkling"],
+                   help="the README matrix; gemma or inkling for the "
+                        "opt-in lines")
     g.add_argument("--variant", metavar="ID",
                    help="emit V_* registry fields for one family")
     g.add_argument("--quants", metavar="ID",

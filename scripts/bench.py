@@ -179,7 +179,7 @@ def runs_uncensored(status, preferred=""):
 
 
 def line_of(variant):
-    """The model line a family belongs to: "qwen" or "gemma"."""
+    """The model line a family belongs to: "qwen", "gemma" or "inkling"."""
     return hardware.MODELS.get(variant, {}).get("group", "qwen")
 
 
@@ -540,7 +540,7 @@ def recommend(results, min_ctx=None, uncensored=False, line="qwen"):
     over the setups that measured cleanly, or None when none did.
 
     Only builds of the kind the user runs are weighed: the same model
-    line (Qwen unless line says Gemma), and stock unless uncensored is
+    line (Qwen unless line names another), and stock unless uncensored is
     set. Which line, and whether abliterated, are choices about the
     model, not the hardware. E4B is not weighed while anything else
     is: it is too weak at tool calls to recommend. The others land in
@@ -576,8 +576,8 @@ def set_aside_note(rec, uncensored=False, line="qwen"):
     if not rec["set_aside"]:
         return ""
     if any(line_of(r.get("variant")) != line for r in rec["set_aside"]):
-        return ("Rows from the other model line are compared but not "
-                "picked: Qwen or Gemma is your call, not the hardware's")
+        return ("Rows from another model line are compared but not "
+                "picked: which line to run is your call, not the hardware's")
     if all(not suggestable(r.get("variant")) for r in rec["set_aside"]):
         return ("Gemma 4 E4B rows are compared but not picked: it is too "
                 "weak at tool calls to recommend")

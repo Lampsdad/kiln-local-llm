@@ -89,12 +89,18 @@ Both script families are maintained in parallel — a change to
 
 `MODELS` in `scripts/hardware.py` is the only place that knows what a
 build *is*: repo, filename prefix, Cursor alias, quant ladder with byte
-sizes, MTP head, vision projector, sampling, draft length and minimum
-llama.cpp build. `lib_variants.bat` and `lib_variants.sh` read it, and
-everything else is variant-blind. A new variant is an entry there,
-plus its place in `DISK_ORDER`, and in `FAMILY_ORDER` or `SIBLINGS` if
-kiln may pick or suggest it. The Gemma 4 entries are the template for
-a new architecture. NOTES.md says how their sizing was measured.
+sizes, MTP head, vision projector, sampling, draft length, minimum
+llama.cpp build and, where it matters, ubatch, n-gram speculation for
+a family with no MTP head (`ngram`) and a default reasoning effort
+(`effort`). `lib_variants.bat` and
+`lib_variants.sh` read it, and everything else is variant-blind. A new
+variant is an entry there, plus its place in `DISK_ORDER`, and in
+`FAMILY_ORDER` or `SIBLINGS` if kiln may pick or suggest it. The Gemma 4
+entries are the template for a new architecture. NOTES.md says how
+their sizing was measured. Load a new architecture at two contexts and
+two ubatch sizes before trusting the arithmetic. Inkling 2 Mini's
+compute buffer turned out to grow with context times ubatch, and only
+a load showed it.
 `.github/scripts/test_hardware.py` checks that the new entry's files
 do not collide with an existing one.
 

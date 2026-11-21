@@ -6,6 +6,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Inkling 2 Mini, opt-in.** `kiln get inkling-mini` and `kiln start
+  inkling-mini` serve Thinking Machines' Inkling 2 Mini, a 26B mixture
+  of experts with 3.4B active and vision. Like Gemma, kiln never picks
+  it on its own. The weights are ggml-org's `Q8_0` and `IQ4_NL`, since
+  unsloth's quants need unsloth's llama.cpp fork. There is no draft
+  head, so it runs llama.cpp's n-gram speculation (`--spec-type
+  ngram-mod`) instead, which drafts from text already in the context:
+  a code rewrite ran at 100-110 t/s instead of 74. It starts at
+  `--reasoning-effort medium`, which cut a coding answer from 2-2.5
+  minutes to 40-50 seconds; a request's own `reasoning_effort` still
+  wins. On 32 GB it runs
+  `IQ4_NL` with vision at 144K; 24 GB loads it,
+  but under the 96K bar. Its attention bias makes llama.cpp's compute
+  buffer grow with context times ubatch, so it launches at
+  `--ubatch-size 256`. The registry can now pin a family's ubatch, and
+  both start scripts pass it. It needs llama.cpp b12600 or newer, and
+  `kiln start` refuses an older build before it stops the running
+  server. The Windows menus, both
+  status boards and `scripts/hardware.py --table inkling` know it.
+
+### Fixed
+
+- **The CUDA build matches the driver's major version.** Setup on
+  Linux took 13.4 or 12.8 by name, so once llama.cpp moved to 13.5 a
+  13.x driver got the 12.8 build. `kiln update` on Windows took the
+  newest build whatever the driver, so a 12.x driver got a 13.x build
+  that, by NVIDIA's rules, cannot start. Both now take the newest build
+  of the driver's own major version: 13.5 on a driver reporting 13.4
+  (tested on the 5090 on both), 12.8 on Linux or 12.4 on Windows for a
+  12.x driver. So Linux setup with any 13.x driver now installs the
+  13.5 build, not 12.8; the 5090 ran it at the same speed.
+- **`slurm-llama.sh` passes `--ubatch-size` once.** It added its own
+  1024 next to a family's pinned one, which llama.cpp b12600 warns
+  about.
+
 ## [1.2.0] — 2026-10-15
 
 ### Added

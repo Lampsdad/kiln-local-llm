@@ -156,8 +156,9 @@ echo
 
 # ── kiln_model_args BINARY ──────────────────────────────────
 # Fills EXTRA with the flags that depend on the family: sampling,
-# reasoning, the MTP head and the projector. Exits when the build
-# is too old for the family at all.
+# reasoning and its effort, ubatch, the MTP head or n-gram speculation,
+# and the projector. Exits when the build is too old for the family at
+# all.
 #
 # MTP speculative decoding merged into llama.cpp in b9180
 # (2026-05-16). Older builds reject --spec-type draft-mtp, so
@@ -191,13 +192,27 @@ kiln_model_args() {
     if [ -n "${V_REASONING:-}" ]; then
         EXTRA+=(--reasoning "$V_REASONING")
     fi
+    # The template's default thinking level (Inkling: medium). A
+    # request that sends reasoning_effort still gets its own.
+    if [ -n "${V_EFFORT:-}" ]; then
+        EXTRA+=(--reasoning-effort "$V_EFFORT")
+        echo "Reasoning effort: $V_EFFORT (a request can ask for another)"
+    fi
+    # The context was sized for this ubatch (Inkling's compute buffer
+    # grows with it). slurm-llama.sh drops its own --ubatch-size when
+    # this is set, so the flag appears once.
+    if [ -n "${V_UBATCH:-}" ]; then
+        EXTRA+=(--ubatch-size "$V_UBATCH")
+    fi
     # The help is read whole, not piped into grep -q: grep quits at the
     # first match, and llama-server's SIGPIPE for the rest of its help
     # then fails the pipeline under pipefail, which turns MTP off with
     # no word about why. A smaller pipe buffer makes that likely.
     local bin_help="" mtp_ok=0
-    if [ -n "$MTP" ]; then
+    if [ -n "$MTP" ] || [ -n "${V_NGRAM:-}" ]; then
         bin_help="$("$bin" --help 2>&1 || true)"
+    fi
+    if [ -n "$MTP" ]; then
         case "$bin_help" in *draft-mtp*) mtp_ok=1 ;; esac
     fi
     if [ "$mtp_ok" = 1 ]; then
@@ -210,6 +225,18 @@ kiln_model_args() {
         echo "MTP speculative decoding: unavailable (need llama.cpp b9180+)"
     else
         echo "MTP speculative decoding: off (no MTP head for this build)"
+    fi
+    # Model-free speculation (Inkling: ngram-mod) for a family with no
+    # head. It drafts from text already in the context, so it pays on
+    # edits and costs next to nothing where it finds no match.
+    if [ "$mtp_ok" = 0 ] && [ -n "${V_NGRAM:-}" ]; then
+        case "$bin_help" in
+            *"$V_NGRAM"*)
+                EXTRA+=(--spec-type "$V_NGRAM")
+                echo "N-gram speculative decoding: enabled ($V_NGRAM)" ;;
+            *)
+                echo "N-gram speculative decoding: unavailable (no $V_NGRAM in this build)" ;;
+        esac
     fi
     if [ -n "$MMPROJ" ]; then
         EXTRA+=(--mmproj "$MMPROJ")

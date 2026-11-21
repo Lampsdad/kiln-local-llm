@@ -146,6 +146,7 @@ call :row " abliterated" "%ST_ABL_S%"
 call :row " 9B distill"  "%ST_9B_S%"
 call :row " 4B distill"  "%ST_4B_S%"
 if defined ST_GEMMA_S call :row "Gemma 4" "%ST_GEMMA_S%"
+if defined ST_INK_S call :row "Inkling 2 Mini" "%ST_INK_S%"
 call :row "shared files" "%ST_SHARED_S%"
 call :rule
 call :row "server"       "%ST_RUN_S%"
@@ -289,6 +290,13 @@ if exist "models\gemma-4-*.gguf" (
     if defined Q_GE4 set "ST_GEMMA_S=!ST_GEMMA_S!%C_OK%E4B !Q_GE4!%C_0%  "
 )
 
+:: Inkling 2 Mini likewise. Its projectors are mmproj-Inkling-*.
+set "ST_INK_S="
+if exist "models\Inkling-2-Mini-*.gguf" (
+    call :probe inkling-mini Q_INK
+    if defined Q_INK set "ST_INK_S=%C_OK%!Q_INK!%C_0%"
+)
+
 :: Both builds share these two, so they are their own row rather
 :: than being counted against either one.
 :: Wildcards, not exact names: the MTP head ships as Q8_0 or
@@ -337,11 +345,16 @@ if "%ST_RUN%"=="1" if exist "%CF_LOG%" (
 :: the step that unblocks the rest.
 if "%ST_BIN%"=="0" set "ST_NEXT=%C_AC%kiln setup%C_0%    install llama.cpp and cloudflared"
 if not defined ST_NEXT if "%ST_MTP%"=="0" set "ST_NEXT=%C_AC%kiln update%C_0%   upgrade llama.cpp for MTP speculative decoding"
-if not defined ST_NEXT if not defined Q_BASE if not defined Q_ABL if not defined Q_9B if not defined Q_4B if not defined ST_GEMMA_S set "ST_NEXT=%C_AC%kiln get%C_0%      download the weights kiln hardware recommends"
-:: Gemma 4 refuses to start on a build older than its minimum.
+if not defined ST_NEXT if not defined Q_BASE if not defined Q_ABL if not defined Q_9B if not defined Q_4B if not defined ST_GEMMA_S if not defined ST_INK_S set "ST_NEXT=%C_AC%kiln get%C_0%      download the weights kiln hardware recommends"
+:: Gemma 4 and Inkling 2 Mini refuse to start on a build older than
+:: their minimum. Inkling's is the newer, so it is checked first.
 set "V_MIN_BUILD=0"
-if defined ST_GEMMA_S if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --variant gemma-12b 2^>nul`) do if "%%A"=="V_MIN_BUILD" set "V_MIN_BUILD=%%B"
-if not defined ST_NEXT if not "%BUILD%"=="0" if %BUILD% LSS %V_MIN_BUILD% set "ST_NEXT=%C_AC%kiln update%C_0%   Gemma 4 needs llama.cpp b%V_MIN_BUILD% or newer"
+set "NEED_LABEL="
+if defined ST_INK_S if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --variant inkling-mini 2^>nul`) do if "%%A"=="V_MIN_BUILD" set "V_MIN_BUILD=%%B"
+if defined ST_INK_S set "NEED_LABEL=Inkling 2 Mini"
+if not defined NEED_LABEL if defined ST_GEMMA_S if defined PY_EXE for /f "usebackq tokens=1,* delims==" %%A in (`%PY_EXE% "%~dp0..\hardware.py" --variant gemma-12b 2^>nul`) do if "%%A"=="V_MIN_BUILD" set "V_MIN_BUILD=%%B"
+if not defined NEED_LABEL if defined ST_GEMMA_S set "NEED_LABEL=Gemma 4"
+if not defined ST_NEXT if not "%BUILD%"=="0" if %BUILD% LSS %V_MIN_BUILD% set "ST_NEXT=%C_AC%kiln update%C_0%   %NEED_LABEL% needs llama.cpp b%V_MIN_BUILD% or newer"
 if not defined ST_NEXT if "%ST_RUN%"=="0" set "ST_NEXT=%C_AC%kiln start%C_0%    serve a model to Cursor"
 if not defined ST_NEXT if not exist ".kiln\cursor.json" set "ST_NEXT=%C_AC%kiln cursor%C_0%   connect Cursor to the server"
 exit /b 0
@@ -754,6 +767,8 @@ echo   %C_AC%base ablit 9b 4b%C_0%        Qwen3.8: 27B, 27B abliterated, 9B and 
 echo                           distills. kiln picks from these for you.
 echo   %C_AC%gemma-31b gemma-26b%C_0%     Gemma 4: 31B dense, 26B-A4B MoE, 12B and
 echo   %C_AC%gemma-12b gemma-e4b%C_0%     E4B. Only when named. Needs llama.cpp b11059+.
+echo   %C_AC%inkling-mini%C_0%            Inkling 2 Mini: 26B MoE, 3.4B active, 32 GB
+echo                           and up. Only when named. Needs llama.cpp b12600+.
 echo.
 echo  %C_MU%With no command, kiln opens the TUI.%C_0%
 echo  %C_MU%kiln status prints the status board.%C_0%

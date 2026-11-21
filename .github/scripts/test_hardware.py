@@ -32,6 +32,7 @@ CARD_24 = 24564
 CARD_16 = 16384
 CARD_12 = 12288
 GEMMA = [f for f in M if M[f]["group"] == "gemma"]
+OPT_IN = [f for f in M if M[f]["group"] != "qwen"]
 
 
 def output(argv):
@@ -104,7 +105,8 @@ class Registry(unittest.TestCase):
         for fid in M:
             v = keys(["--variant", fid])
             for k in ("V_SAMPLING", "V_REASONING", "V_MTP_FILES",
-                      "V_MMPROJ_FILES", "V_SPEC_N", "V_MIN_BUILD"):
+                      "V_MMPROJ_FILES", "V_SPEC_N", "V_MIN_BUILD",
+                      "V_UBATCH", "V_NGRAM", "V_EFFORT"):
                 self.assertRegex(v[k], self.SAFE, "%s %s" % (fid, k))
 
     def test_aliases_are_distinct(self):
@@ -124,14 +126,35 @@ class Registry(unittest.TestCase):
             self.assertEqual(v["V_SPEC_N"], "3")
             self.assertEqual(v["V_REASONING"], "")
             self.assertEqual(v["V_MIN_BUILD"], "0")
+            self.assertEqual(v["V_UBATCH"], "")
+            self.assertEqual(v["V_NGRAM"], "")
+            self.assertEqual(v["V_EFFORT"], "")
+
+    def test_ngram_only_where_there_is_no_head(self):
+        # A family with an MTP head drafts with that. N-gram speculation
+        # is for one that has none.
+        for fid, fam in M.items():
+            if fam.get("ngram"):
+                self.assertEqual(fam["mtp_heads"], {}, fid)
+        self.assertEqual([f for f in M if M[f].get("ngram")], ["inkling-mini"])
+
+    def test_only_inkling_pins_a_ubatch(self):
+        # Everything else launches at the start script's own ubatch, which
+        # its sizing (COMPUTE_BUF_MIB) already assumes.
+        pinned = [f for f in M if keys(["--variant", f])["V_UBATCH"]]
+        self.assertEqual(pinned, ["inkling-mini"])
+        for fid in M:
+            if fid != "inkling-mini":
+                self.assertEqual(hardware.ctx_bytes(M[fid]), M[fid]["kv_bytes"])
 
 
 class OptIn(unittest.TestCase):
-    def test_gemma_is_never_picked_for_you(self):
+    def test_opt_in_lines_are_never_picked_for_you(self):
+        self.assertTrue(set(GEMMA) | {"inkling-mini"} <= set(OPT_IN))
         for vram in range(6000, 98000, 1024):
             plan = hardware.recommend(vram)
             if plan:
-                self.assertNotIn(plan["family"], GEMMA, vram)
+                self.assertNotIn(plan["family"], OPT_IN, vram)
 
     def test_e4b_is_never_suggested(self):
         quiet = [f for f in M if not M[f].get("suggest", True)]
@@ -160,6 +183,18 @@ class OptIn(unittest.TestCase):
             self.assertEqual(pick(), "gemma-12b")
             open(os.path.join(tmp, "Qwen3.8-9B-Q8_0.gguf"), "w").close()
             self.assertEqual(pick(), "9b")
+
+    def test_disk_pick_runs_inkling_only_when_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def pick():
+                return keys(["--pick-on-disk", "--models-dir", tmp])["VARIANT"]
+            # Its projector is not weights.
+            open(os.path.join(tmp, "mmproj-Inkling-2-Mini-BF16.gguf"), "w").close()
+            self.assertEqual(pick(), "")
+            open(os.path.join(tmp, "Inkling-2-Mini-IQ4_NL.gguf"), "w").close()
+            self.assertEqual(pick(), "inkling-mini")
+            open(os.path.join(tmp, "Qwen3.8-4B-Q8_0.gguf"), "w").close()
+            self.assertEqual(pick(), "4b")
 
 
 class Sizing(unittest.TestCase):
@@ -190,6 +225,42 @@ class Sizing(unittest.TestCase):
             self.assertEqual((plan["family"], plan["quant"], plan["mtp"]),
                              expect)
             self.assertGreaterEqual(plan["ctx"], hardware.MIN_CTX)
+
+    def test_inkling_per_card(self):
+        # The README's "if you ask for Inkling 2 Mini" table, and the 144K
+        # NOTES.md says loaded on the 5090. Its compute buffer grows with
+        # context x ubatch, so the windows are far smaller than its 17 KB
+        # of KV a token suggests.
+        fam = M["inkling-mini"]
+        self.assertEqual(hardware.ctx_bytes(fam), 17408 + 256 * 200)
+        want = {CARD_32: ("IQ4_NL", "bf16", 147456),
+                49140: ("Q8_0", "bf16", 233472)}
+        for vram, expect in want.items():
+            plan = hardware.plan_for(vram, "inkling-mini")
+            self.assertEqual((plan["quant"], plan["mmproj"], plan["ctx"]),
+                             expect, vram)
+            self.assertIsNone(plan["mtp"])
+        # 24 GB loads it, but short of the bar, and says so.
+        self.assertIsNone(hardware.plan_for(CARD_24, "inkling-mini"))
+        plan = hardware.recommend(CARD_24, family="inkling-mini")
+        self.assertEqual(plan["quant"], "IQ4_NL")
+        self.assertTrue(plan.get("below_min"))
+        self.assertIsNone(hardware.recommend(CARD_16, family="inkling-mini"))
+
+    def test_inkling_launches_with_its_own_flags(self):
+        v = keys(["--variant", "inkling-mini"])
+        self.assertEqual(v["V_SAMPLING"],
+                         "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0")
+        self.assertEqual(v["V_REASONING"], "")
+        self.assertEqual(v["V_MIN_BUILD"], "12600")
+        self.assertEqual(v["V_UBATCH"], "256")
+        self.assertEqual(v["V_NGRAM"], "ngram-mod")
+        self.assertEqual(v["V_EFFORT"], "medium")
+        self.assertEqual(v["V_MTP"], "0")
+        self.assertEqual(v["V_MTP_FILES"], "")
+        self.assertEqual(v["V_MMPROJ_FILES"],
+                         "mmproj-Inkling-2-Mini-BF16.gguf "
+                         "mmproj-Inkling-2-Mini-Q8_0.gguf")
 
     def test_e4b_weights_leave_the_embeddings_in_ram(self):
         fam = M["gemma-e4b"]

@@ -80,8 +80,8 @@ stock. They also publish a `UD-DW-*` series ablating only 23–51 (less
 thorough, warns more); it is not wired up here.
 
 **The byte sizes** in `scripts/hardware.py` are the actual sizes from
-the Hugging Face file listings, read 2026-09-04 for Qwen and 2026-10-14
-for Gemma 4. They feed the download menu, the free-space check and every
+the Hugging Face file listings, read 2026-09-04 for Qwen, 2026-10-14
+for Gemma 4 and 2026-11-20 for Inkling 2 Mini. They feed the download menu, the free-space check and every
 context number. The stock Qwen column was once off by up to 1 GB in both
 directions, so re-check if a publisher reuploads.
 
@@ -150,6 +150,133 @@ fix (#28183, b10742), the vision fix (#28335, b10798) and the
 required-tool-call grammar fix (#29115, b11059) came later. The
 `draft-mtp` probe in the start scripts passes on all of those builds, so
 Gemma carries its own `min_build`, and start refuses anything older.
+
+## Inkling 2 Mini
+
+**Why opt-in.** The same reason as Gemma: nothing here has measured its
+coding quality against Qwen3.8-27B in Cursor. Its model card scores it
+at or a little above Qwen3.8-27B on most coding benchmarks, but those
+are its maker's numbers.
+
+**Why ggml-org and not unsloth.** unsloth's UD quants were published
+before upstream llama.cpp could load the model, for unsloth's own fork.
+Their headers say `general.architecture = inkling2`. Upstream merged a
+different layout, `inkling2_loop`, in #32694 (2026-11-20, b12600), and
+that is what ggml-org's files use. unsloth also has upstream-layout
+copies of its quants under `Shard_Rewrite/`. They are marked not for
+general use, and they need a loop-pass fix that stock #32694 lacks. kiln
+installs only upstream builds, so ggml-org's `Q8_0` and `IQ4_NL` are
+what it can serve. Revisit this when unsloth moves its root files to
+the upstream layout. Their UD ladder is finer, and their DSpark drafter
+might then work as a draft head.
+
+**Sizing.** The model is looped: layers 6–17 run three times per token,
+and each pass keeps its own KV cache. With five sliding-window layers
+for every global one, 8 of the 48 layer passes are global, so the KV
+cache is only 17,408 B a token. That alone would leave room for about
+170K on a 24 GB card. The compute buffer is what takes it away. Inkling has no
+RoPE, and llama.cpp materialises its relative-position bias for each
+global layer (`kq_b` in `src/models/inkling2.cpp`): n_kv x ubatch x 24
+heads, f32, gathered and then copied. That is 198 B per context token
+per ubatch row, so the compute buffer grows with context times ubatch.
+
+It was found on the CPU build of the merge commit, before any CUDA
+release existed. A 256K load at the default ubatch of 512 reserved a
+25.5 GB compute buffer, against 4.5 GB of KV cache. On the 5090 at
+b12600 (CUDA 12.8), IQ4_NL with no projector, MiB:
+
+| Context | ubatch | KV + SWA | Compute | nvidia-smi delta |
+|---|---|---|---|---|
+| 32K | 128 | 657 | 838 | 18,428 |
+| 64K | 128 | 1,201 | 1,630 | 20,064 |
+| 128K | 128 | 2,289 | 3,214 | 22,176 |
+| 32K | 256 | 657 | 1,678 | 19,405 |
+| 64K | 256 | 1,201 | 3,262 | 21,360 |
+| 64K | 512 | 1,222 | 6,524 | 24,623 |
+
+The registry models it as `ubatch_ctx_bytes = 200` on top of
+`kv_bytes`, and pins the family's `ubatch` so the start scripts launch
+at the ubatch it was sized for. `start.bat` passes 1024 to everything
+else, which for Inkling would be 200 KB a token. 256 was picked by
+prefill speed against the 96K bar on 32 GB: 512 leaves 80K, 384 leaves
+104K and 256 leaves 144K. Prefill of a 32K prompt runs 1,027 / 1,178 /
+1,272 t/s at 256 / 384 / 512. The cross-check was `kiln start` at the
+144K the formula allows, with the BF16 projector. The whole card sat at
+29,367 of 32,607 MiB, desktop included, and 29,895 after a 123K-token
+prompt. Only IQ4_NL was loaded. The Q8_0 numbers are the same
+arithmetic.
+
+Gemma's flash-attention scratch (one global layer's K and V at f16) is
+not counted, because none showed up. Fitting the grid to compute =
+a + b x ubatch per token gives b = 198 and a = 0. If upstream ever stops
+materialising the bias, re-measure: `ubatch_ctx_bytes` would then be far
+too high, and a scratch term may appear.
+
+**Minimum build.** #32694 merged as b12600, released 2026-11-20. The
+Inkling chat parser (#32381) is older. `--reasoning-effort`, which kiln
+uses to start Inkling at `medium`, is in b12600 too.
+
+**Why it is not faster than Qwen3.8-27B.** The card says 3.4B active,
+and 5.4B counting the looped passes. Summing the GGUF's tensors, with
+experts at 8 of 128 and layers 6–17 three times, a token reads 4.1 GB,
+against 20.9 GB for Qwen's `UD-Q5_K_XL`. On bandwidth alone it would be
+about five times faster. It is not: 77 t/s reads 334 GB/s of the
+5090's 1,792, where Qwen's 65 t/s reads 1,382. The GPU drew about 250 W
+while Inkling generated. A step costs a fixed ~13 ms, whatever it
+reads: `llama-bench` batches of 1, 4 and 8 tokens took 13.3, 19 and
+22 ms, against Qwen's 15.4, 16.6 and 16.9. The likely cause is the
+graph: 12,402 nodes a token to Qwen's 3,993, most of them small. That
+is llama.cpp's first-day implementation, and the model card warns that
+local runtimes are new to looped models. Re-measure on a later build.
+All on b12600 with `-fa 1 -ctk q8_0 -ctv q8_0`, 2026-11-21:
+
+| | Inkling `IQ4_NL`, `-ub 256` | Qwen `UD-Q5_K_XL`, `-ub 1024` |
+|---|---|---|
+| tg128 | 77 | 65 |
+| tg128 at 32K / 96K deep | 77 / 60 | 59 / 49 |
+| pp4096 | 1,437 | 3,508 |
+| pp4096 at 32K deep | 855 | 3,072 |
+| as served (Qwen with MTP) | 69–76 | 98–134 |
+
+Same prompts through llama-server with kiln's flags, default thinking:
+an ISO 8601 duration parser took Inkling 123–150 s (7,800–9,100
+thinking tokens), and Qwen 180 s (18,500, after two runs that hit a
+16,000-token cap). A short explanation took 10–11 s against 15–17 s.
+A question about a 66 KB pair of files took 34 s against 18 s, most of
+it prefill. Inkling's tokenizer uses 8–15% more tokens for the same
+text (3.09 characters a token on these answers, Qwen 3.34).
+
+**Reasoning effort.** The template maps `none` … `max` to a "Thinking
+effort level" line, and both a request's `reasoning_effort` field and
+`chat_template_kwargs` reach it (checked with `/apply-template`), as
+would a server-side `--chat-template-kwargs` default. On the parser
+prompt, `medium` thought 1,700–2,200 tokens (40–50 s) and `low`
+630–930 (22–33 s). Against 24 shared checks, both `high` answers passed
+everything, one of two `medium` and neither `low` (both accepted
+`P3DT`). kiln starts Inkling at `medium` (`--reasoning-effort`): a
+third of the wait, at a cost that two answers a level can only hint
+at. A request that sends `reasoning_effort` gets its own level, and
+the server flag renders 0.7 when it sends none (checked).
+
+**N-gram speculation.** With no draft head, `--spec-type ngram-mod`
+drafts from matching text earlier in the context. Because a step's
+cost barely grows with its batch, accepted drafts are close to free.
+On "rename this parameter and add docstrings, return the code", the
+rewrite ran at 60–155 t/s (about 100–110 on average) against 74, with
+67% of drafted tokens accepted. On new code, 18% were accepted and the
+run was about 5% slower. Prose, arithmetic and the long-file question
+drafted nothing and gave byte-identical answers with the same seed.
+It worked with the vision projector loaded.
+
+**CUDA build versus driver.** b12600's CUDA 13.5 builds, Linux and
+Windows, loaded and ran both models on a driver reporting CUDA 13.4
+(616.64), at the 12.8 build's speed (Inkling 79 t/s, Qwen 65). That is
+CUDA's minor version compatibility, so both installers now take the
+newest build of the driver's major version rather than a named one.
+By NVIDIA's rules a 12.x driver (before 580) cannot run a 13.x build at
+all; that was not tested here. One consequence rests on the single
+13.4 data point: a Linux driver at 13.0–13.3 now gets the 13.5 build,
+where setup used to give it 12.8.
 
 ## cmd.exe traps found the hard way
 
