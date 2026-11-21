@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-11-21
+
 ### Added
 
 - **Inkling 2 Mini, opt-in.** `kiln get inkling-mini` and `kiln start
@@ -448,6 +450,7 @@ place across every platform.
 - **2026-04-24** — Initial local model setup, Windows start scripts, and
   Cursor instructions.
 
+[1.3.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Lampsdad/kiln-local-llm/releases/tag/v1.0.0
